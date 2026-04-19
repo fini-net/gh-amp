@@ -4,11 +4,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Purpose
 
-This is a GitHub repository template that implements best practices for open source projects. It's designed to be cloned and customized for new repositories. The template includes GitHub community standards compliance, automated workflows, and a command-line driven development process.
+This is `gh-amp`, a GitHub CLI extension that streamlines the PR review workflow
+by providing an interactive interface to approve, merge, and pull PRs. The name
+`amp` stands for **Approve, Merge, Pull**.
 
-## Development Workflow
+## Extension Architecture
 
-This repo uses `just` (command runner) for all development tasks. The workflow is entirely command-line based using `just` and the GitHub CLI (`gh`).
+The extension is a single bash script (`gh-amp`) that implements three subcommands:
+
+- **`gh amp list`** -- List pull requests with filters (author, label, state, search, repo)
+- **`gh amp status [PR]`** -- Show CI status for a PR (or current branch's PR)
+- **`gh amp review`** -- Interactive workflow: select a PR, then approve/merge/pull
+
+The script uses `gh` CLI commands under the hood (`gh pr list`, `gh pr checks`,
+`gh pr review --approve`, `gh pr merge`, `gh pr view`) and `jq` for JSON parsing.
+
+### gh-amp script internals
+
+Global variables (`REPO`, `STATE`, `LIMIT`, `AUTHOR`, `LABEL`, `SEARCH`, `MERGE_STRATEGY`) hold
+filter/config state. `main()` parses all flags into these globals before dispatching to subcommands,
+so flags can appear anywhere on the command line before the subcommand name.
+
+Key functions and their roles:
+
+- `pr_list_args()` -- Builds a shared `gh pr list` args array from globals (used by both `cmd_list` and `select_pr`)
+- `select_pr()` -- Interactive numbered menu; prints PR number to stdout for capture by caller
+- `review_pr()` -- Infinite loop presenting a numbered action menu for a single PR
+- `approve_pr()` / `merge_pr()` / `pull_pr()` -- Individual action steps called by the review loop
+
+## Development Commands
+
+### Extension development
+
+- `just run <args>` - Run `./gh-amp` directly without installing (e.g., `just run list`)
+- `just install` - Install locally via `gh extension install .`
+- `just uninstall` - Remove with `gh extension remove gh-amp`
+- `just shellcheck-amp` - Run shellcheck on the `gh-amp` script
 
 ### Standard development cycle
 
@@ -17,23 +48,6 @@ This repo uses `just` (command runner) for all development tasks. The workflow i
 3. `just pr` - Create PR, push changes, and watch checks
 4. `just merge` - Squash merge PR, delete branch, return to main, and pull latest
 5. `just sync` - Return to main branch and pull latest (escape hatch)
-
-### AI Review Workflows
-
-**Copilot Review:**
-
-1. `just pr` - Create PR (triggers initial Copilot review if enabled)
-2. Make changes based on review feedback
-3. `just copilot_refresh` - Request fresh review after changes
-4. `just copilot_pick` - Browse suggestions interactively using gum
-5. Address suggestions and iterate
-
-**Claude Review:**
-
-1. `just pr` - Create PR (triggers initial Claude review if enabled)
-2. `just claude_review` - View Claude's latest PR code review comments
-3. Make changes based on review feedback
-4. Iterate as needed
 
 ### Additional commands
 
@@ -45,11 +59,8 @@ This repo uses `just` (command runner) for all development tasks. The workflow i
 - `just copilot_pick` - Interactively browse and select Copilot PR review suggestions using gum
 - `just copilot_refresh` - Request a new Copilot review on current PR
 - `just claude_review` - View Claude's latest PR code review comments
-- `just pr_body_test` - Test PR body update logic
-- `just template_sync_test` - Test template sync logic
 - `just release <version>` - Create a GitHub release with auto-generated notes
 - `just release_age` - Check how long ago the last release was
-- `just clean_template` - Generate a clean README from template (strips template documentation) and removes other files not needed in new repos
 - `just compliance_check` - Run custom repo compliance checks
 - `just shellcheck` - Run shellcheck on all bash scripts in just recipes
 - `just cue-verify` - Verify `.repo.toml` validity and flag configuration
@@ -58,17 +69,29 @@ This repo uses `just` (command runner) for all development tasks. The workflow i
 - `just repo_toml_check` - Check if generated file is up-to-date
 - `just claude_permissions_sort` - Sort Claude Code permissions in canonical order
 - `just claude_permissions_check` - Check Claude Code permissions structure
-- `just utcdate` - Print UTC date in ISO format (used in branch names)
-- `just checksums_generate` - Generate versioned checksums from git history (template-repo only)
 - `just checksums_verify` - Check local .just files against template versions
 - `just checksums_diff <file>` - Show diff between local and latest template version
 - `just update_from_template` - Update .just modules from template-repo (safe, preserves local mods)
 
-## Architecture
+### AI Review Workflows
+
+**Copilot Review:**
+
+1. `just pr` - Create PR (triggers initial Copilot review if enabled)
+2. Make changes based on review feedback
+3. `just copilot_refresh` - Request fresh review after changes
+4. `just copilot_pick` - Browse suggestions interactively using gum
+
+**Claude Review:**
+
+1. `just pr` - Create PR (triggers initial Claude review if enabled)
+2. `just claude_review` - View Claude's latest PR code review comments
+
+## Justfile Architecture
 
 ### Modular justfile structure
 
-The main `justfile` imports ten modules:
+The main `justfile` imports nine modules:
 
 - `.just/compliance.just` - Custom compliance checks for repo health (validates all GitHub community standards)
 - `.just/gh-process.just` - Git/GitHub workflow automation (core PR lifecycle)
@@ -78,7 +101,6 @@ The main `justfile` imports ten modules:
 - `.just/claude.just` - Claude Code permission management
 - `.just/copilot.just` - GitHub Copilot integration recipes (interactive suggestion picker, review refresh)
 - `.just/repo-toml.just` - Repository metadata extraction and shell variable generation
-- `.just/testing.just` - Test recipes for PR body updates and template sync logic
 - `.just/template-sync.just` - Template synchronization and update system
 
 ### Repository metadata extraction
@@ -126,27 +148,7 @@ The `.just/shellcheck.just` module extracts and validates bash scripts:
 - **Script extraction** - Uses awk to identify recipes with bash shebangs (`#!/usr/bin/env bash` or `#!/bin/bash`)
 - **Automatic detection** - Scans all justfiles in repo (main `justfile` and `.just/*.just`)
 - **Temporary file handling** - Creates temporary files for each script and runs shellcheck with `-x -s bash` flags
-- **Detailed reporting** - Shows which file and recipe each issue is in, with colored output
 - **Exit code** - Returns 1 if issues found, 0 if all scripts pass
-
-### Claude Code permission management
-
-The `.just/claude.just` module manages `.claude/settings.local.json`:
-
-- **Canonical sorting** - Groups permissions by type (Bash, WebFetch, WebSearch, Other) and sorts alphabetically within groups
-- **Structure validation** - Checks for required JSON structure and permission arrays
-- **Backup handling** - Creates backups before modifications and restores on error
-- **Permission analytics** - Reports counts and breakdown by permission type
-
-### Standard release workflow
-
-The template includes a standard release workflow controlled by the `standard-release` flag:
-
-- **Default behavior** - When enabled (`standard-release = true`), provides `release` and `release_age` recipes
-- **Release creation** - `just release <version>` creates GitHub releases with auto-generated notes
-- **Release monitoring** - `just release_age` checks release freshness and commit count since last release
-- **Custom workflows** - Set `standard-release = false` in `.repo.toml` to disable standard recipes for projects with custom release mechanisms
-- **Graceful degradation** - When disabled, recipes display informational messages and exit cleanly (exit 0)
 
 ### Template sync system
 
@@ -155,14 +157,8 @@ The `.just/template-sync.just` module enables safe updates from template-repo:
 - **Multi-version checksums** - Tracks all historical versions of .just modules in `.just/CHECKSUMS.json`
 - **Safe updates** - Only modifies files matching a known template version
 - **Local preservation** - Files with modifications are skipped and reported
-- **Clear reporting** - Shows updated/skipped/new files with version info
-- **Diagnostic tools** - `checksums_verify` and `checksums_diff` for preview and inspection
 
-The system uses three core scripts in `.just/lib/`:
-
-- **generate_checksums.sh** - Extract checksums from git history with version tracking
-- **template_update.sh** - Core update logic (compare, download, verify, rollback on failure)
-- **template_sync_test.sh** - Test suite with fixtures in `.just/test/fixtures/template_sync/`
+The system uses core scripts in `.just/lib/`: `generate_checksums.sh`, `template_update.sh`.
 
 ### GitHub Actions
 
@@ -173,20 +169,8 @@ Workflows in `.github/workflows/`:
 - **actionlint.yml** - Lints GitHub Actions workflow files
 - **auto-assign.yml** - Automatically assigns issues/PRs to `chicks-net`
 - **claude-code-review.yml** - Claude AI review automation
-- **claude.yml** - Additional Claude integration
 - **cue-verify.yml** - Validates `.repo.toml` format and flags
-- **pr-body-tests.yml** - Tests PR body update logic
 - **template-sync.yml** - Tests template synchronization system
-
-### Testing infrastructure
-
-The `.just/testing.just` module provides automated testing:
-
-- **pr_body_test** - Tests PR body update logic using `.just/lib/pr_body_test.sh`
-- **template_sync_test** - Tests template sync logic using `.just/lib/template_sync_test.sh`
-- **Test fixtures** - Located in `.just/test/fixtures/template_sync/`
-
-Both test recipes run via GitHub Actions on every PR to ensure core functionality works.
 
 ### Markdown linting
 
@@ -200,31 +184,6 @@ Configuration in `.markdownlint.yml`:
 
 Run locally: `markdownlint-cli2 **/*.md`
 
-## Template customization
-
-When using this template for a new project:
-
-1. Search and replace:
-   - `fini-net` → your GitHub org
-   - `template-repo` → your repo name
-   - `chicks-net` → your username (especially in `.github/workflows/auto-assign.yml`)
-2. Update `.repo.toml` with your repository metadata
-3. Run `just clean_template` to strip template documentation and files from README
-4. Run `just cue-sync-from-github` to sync description and topics from GitHub
-5. Run `just compliance_check` to verify all community standards files are in place
-
-## Important implementation notes
-
-- All git commands in `.just/gh-process.just` use standard git (no aliases required)
-- The `pr` recipe runs optional pre-PR hooks if `.just/pr-hook.just` exists
-- PR checks poll every 5 seconds for faster feedback, with smart startup waiting
-- The `.just` directory contains modular just recipes that can be copied to other projects for updates
-- just catches errors from commands when the recipe isn't a shebang form that runs another scripting engine
-- just colors come from built-in constants: `{{GREEN}}`, `{{BLUE}}`, `{{RED}}`, `{{YELLOW}}`, `{{NORMAL}}`
-- Hidden recipes (prefixed with `_`) are internal helpers and not shown in `just --list`
-- The `again` recipe is for iterating on PRs: push, update description, watch checks
-- Release notes for workflow changes are tracked in `.just/RELEASE_NOTES.md`
-
 ## Dependencies
 
 ### Required tools
@@ -232,9 +191,18 @@ When using this template for a new project:
 - `just` - Command runner for all recipes
 - `gh` - GitHub CLI for PR and release management
 - `git` - Version control
+- `jq` - JSON processor (used by `gh-amp` for parsing PR data)
 
 ### Optional tools
 
 - **gum** - Interactive selection tool for `copilot_pick` recipe
   - Install: `brew install gum` (macOS) or see <https://github.com/charmbracelet/gum>
   - Usage: `just copilot_pick` (must be run from a branch with an open PR)
+
+### Notes
+
+- All git commands in `.just/gh-process.just` use standard git (no aliases required)
+- just catches errors from commands when the recipe isn't a shebang form that runs another scripting engine
+- just colors come from built-in constants: `{{GREEN}}`, `{{BLUE}}`, `{{RED}}`, `{{YELLOW}}`, `{{NORMAL}}`
+- Hidden recipes (prefixed with `_`) are internal helpers and not shown in `just --list`
+- Release notes for workflow changes are tracked in `.just/RELEASE_NOTES.md`
