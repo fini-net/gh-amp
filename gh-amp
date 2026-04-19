@@ -253,13 +253,16 @@ review_pr() {
         echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
 
         echo ""
+        log_info "Showing diff for PR #${pr_number}..."
+        gh pr diff "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || true
+        echo ""
+
         echo -e "  ${BOLD}1)${RESET}  View CI status"
-        echo -e "  ${BOLD}2)${RESET}  View diff"
-        echo -e "  ${BOLD}3)${RESET}  Approve PR"
-        echo -e "  ${BOLD}4)${RESET}  Merge PR (${MERGE_STRATEGY})"
-        echo -e "  ${BOLD}5)${RESET}  Pull branch locally"
-        echo -e "  ${BOLD}6)${RESET}  Approve + Merge + Pull (full workflow)"
-        echo -e "  ${BOLD}7)${RESET}  Open in browser"
+        echo -e "  ${BOLD}2)${RESET}  Approve PR"
+        echo -e "  ${BOLD}3)${RESET}  Merge PR (${MERGE_STRATEGY})"
+        echo -e "  ${BOLD}4)${RESET}  Pull branch locally"
+        echo -e "  ${BOLD}5)${RESET}  Approve + Merge + Pull (full workflow)"
+        echo -e "  ${BOLD}6)${RESET}  Open in browser"
         echo -e "  ${BOLD}0)${RESET}  Back / Exit"
         echo ""
 
@@ -273,21 +276,17 @@ review_pr() {
                 ;;
             2)
                 echo ""
-                gh pr diff "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || true
+                approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
                 ;;
             3)
                 echo ""
-                approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
                 ;;
             4)
                 echo ""
-                merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
-                ;;
-            5)
-                echo ""
                 pull_pr "$pr_number" "$branch" "$base" ${repo_args[@]+"${repo_args[@]}"}
                 ;;
-            6)
+            5)
                 echo ""
                 local success=true
                 approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
@@ -295,7 +294,7 @@ review_pr() {
                     merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
                 fi
                 if $success; then
-                    pull_pr "$pr_number" "$branch" "$base" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                    pull_pr "$pr_number" "$branch" "$base" ${repo_args[@]+"${repo_args[@]}"}
                 fi
                 if $success; then
                     echo ""
@@ -305,7 +304,7 @@ review_pr() {
                     log_warn "Workflow did not complete fully"
                 fi
                 ;;
-            7)
+            6)
                 gh pr view "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --web || true
                 ;;
             0|"")
