@@ -1,0 +1,460 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="0.1.0"
+
+BOLD="\033[1m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+RED="\033[31m"
+BLUE="\033[34m"
+CYAN="\033[36m"
+DIM="\033[2m"
+RESET="\033[0m"
+
+REPO=""
+STATE="open"
+LIMIT=30
+AUTHOR=""
+LABEL=""
+SEARCH=""
+MERGE_STRATEGY="squash"
+
+usage() {
+    cat <<EOF
+${BOLD}gh amp${RESET} - Approve, Merge, Pull workflow for GitHub PRs
+
+${BOLD}USAGE${RESET}
+    gh amp <command> [flags]
+
+${BOLD}COMMANDS${RESET}
+    list      List pull requests with optional filters
+    status    Show CI status for pull request(s)
+    review    Interactive workflow: select PR, view status, approve/merge/pull
+
+${BOLD}FLAGS${RESET}
+    -R, --repo [HOST/]OWNER/REPO   Select another repository
+    -A, --author string            Filter by PR author
+    -l, --label string             Filter by label
+    -s, --state string             Filter by state: open|closed|merged|all (default: open)
+    -L, --limit int                Maximum number of PRs to fetch (default: 30)
+    -S, --search string            Search query for filtering PRs
+        --merge-strategy string    Merge strategy: squash|merge|rebase (default: squash)
+        --version                  Show version
+    -h, --help                     Show help
+
+${BOLD}EXAMPLES${RESET}
+    # List open PRs for the current repo
+    \$ gh amp list
+
+    # List PRs authored by you
+    \$ gh amp list --author @me
+
+    # Show CI status for a specific PR
+    \$ gh amp status 42
+
+    # Show CI status for current branch's PR
+    \$ gh amp status
+
+    # Interactive review workflow
+    \$ gh amp review
+
+    # Review PRs in a specific repo
+    \$ gh amp review -R fini-net/gh-amp
+
+EOF
+}
+
+version() {
+    echo "gh-amp v${VERSION}"
+}
+
+log_info() {
+    echo -e "${BLUE}ℹ${RESET} $*"
+}
+
+log_success() {
+    echo -e "${GREEN}✓${RESET} $*"
+}
+
+log_warn() {
+    echo -e "${YELLOW}⚠${RESET} $*"
+}
+
+log_error() {
+    echo -e "${RED}✗${RESET} $*" >&2
+}
+
+pr_list_args() {
+    local args=()
+    args+=(--state "$STATE")
+    args+=(--limit "$LIMIT")
+
+    if [[ -n "$REPO" ]]; then
+        args+=(--repo "$REPO")
+    fi
+    if [[ -n "$AUTHOR" ]]; then
+        args+=(--author "$AUTHOR")
+    fi
+    if [[ -n "$LABEL" ]]; then
+        args+=(--label "$LABEL")
+    fi
+    if [[ -n "$SEARCH" ]]; then
+        args+=(--search "$SEARCH")
+    fi
+
+    printf '%s\n' "${args[@]}"
+}
+
+cmd_list() {
+    local gh_args=(pr list)
+    local filter_args
+    filter_args="$(pr_list_args)"
+    while IFS= read -r arg; do
+        gh_args+=("$arg")
+    done <<< "$filter_args"
+
+    gh_args+=("--json" "number,title,author,state,updatedAt,headRefName,baseRefName,reviewDecision,mergeable")
+    gh_args+=(--template '{{range .}}{{tablerow (printf "#%v" .number | autocolor "green") .title (.author.login | autocolor "cyan") .headRefName (.baseRefName | autocolor "yellow") .reviewDecision .mergeable}}{{end}}')
+
+    echo -e "${BOLD}  PR   Title                                                    Author         Branch                Base            Review        Mergeable${RESET}"
+    gh "${gh_args[@]}"
+}
+
+cmd_status() {
+    local pr_ref="${1:-}"
+    local gh_args=(pr checks)
+
+    if [[ -n "$pr_ref" ]]; then
+        gh_args+=("$pr_ref")
+    fi
+    if [[ -n "$REPO" ]]; then
+        gh_args+=(--repo "$REPO")
+    fi
+
+    gh "${gh_args[@]}"
+}
+
+cmd_review() {
+    local pr_number=""
+
+    pr_number="$(select_pr)"
+    if [[ -z "$pr_number" ]]; then
+        log_error "No PR selected"
+        return 1
+    fi
+
+    review_pr "$pr_number"
+}
+
+select_pr() {
+    local gh_args=(pr list)
+    local filter_args
+    filter_args="$(pr_list_args)"
+    while IFS= read -r arg; do
+        gh_args+=("$arg")
+    done <<< "$filter_args"
+
+    gh_args+=("--json" "number,title,author,headRefName,baseRefName,reviewDecision,mergeable")
+
+    local prs
+    prs="$(gh "${gh_args[@]}")"
+
+    if [[ -z "$prs" || "$prs" == "[]" ]]; then
+        log_warn "No pull requests found" >&2
+        return 1
+    fi
+
+    echo -e "${BOLD}${CYAN}Select a pull request:${RESET}" >&2
+    echo "" >&2
+
+    local numbers=()
+    local i=1
+
+    while IFS= read -r line; do
+        local num title author branch base review mergeable
+        num="$(echo "$line" | jq -r '.number')"
+        title="$(echo "$line" | jq -r '.title')"
+        author="$(echo "$line" | jq -r '.author.login')"
+        branch="$(echo "$line" | jq -r '.headRefName')"
+        base="$(echo "$line" | jq -r '.baseRefName')"
+        review="$(echo "$line" | jq -r '.reviewDecision')"
+        mergeable="$(echo "$line" | jq -r '.mergeable')"
+
+        local review_color="${YELLOW}"
+        if [[ "$review" == "APPROVED" ]]; then
+            review_color="${GREEN}"
+        elif [[ "$review" == "CHANGES_REQUESTED" ]]; then
+            review_color="${RED}"
+        fi
+
+        local merge_color="${GREEN}"
+        if [[ "$mergeable" == "CONFLICTING" ]]; then
+            merge_color="${RED}"
+        fi
+
+        echo -e "  ${BOLD}${i})${RESET}  ${GREEN}#${num}${RESET}  ${title}" >&2
+        echo -e "      ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | review: ${review_color}${review}${RESET} | merge: ${merge_color}${mergeable}${RESET}" >&2
+
+        numbers+=("$num")
+        ((i++)) || true
+    done <<< "$(echo "$prs" | jq -c '.[]')"
+
+    echo "" >&2
+    echo -e "  ${BOLD}0)${RESET}  Exit" >&2
+    echo "" >&2
+
+    read -rp "$(echo -e "${BOLD}Select PR [1-$((i-1))]: ${RESET}")" choice
+
+    if [[ "$choice" == "0" || -z "$choice" ]]; then
+        return 1
+    fi
+
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -ge "$i" ]]; then
+        log_error "Invalid selection: $choice" >&2
+        return 1
+    fi
+
+    echo "${numbers[$((choice-1))]}"
+}
+
+review_pr() {
+    local pr_number="$1"
+    local repo_args=()
+    if [[ -n "$REPO" ]]; then
+        repo_args+=(--repo "$REPO")
+    fi
+
+    while true; do
+        echo ""
+        echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
+        echo -e "${BOLD}  PR #${pr_number}${RESET}"
+
+        local pr_info
+        pr_info="$(gh pr view "$pr_number" ${repo_args[@]+${repo_args[@]+"${repo_args[@]}"}} --json title,author,headRefName,baseRefName,state,reviewDecision,mergeable,url 2>/dev/null)" || {
+            log_error "Could not fetch PR #$pr_number"
+            return 1
+        }
+
+        local title author branch base state review mergeable url
+        title="$(echo "$pr_info" | jq -r '.title')"
+        author="$(echo "$pr_info" | jq -r '.author.login')"
+        branch="$(echo "$pr_info" | jq -r '.headRefName')"
+        base="$(echo "$pr_info" | jq -r '.baseRefName')"
+        state="$(echo "$pr_info" | jq -r '.state')"
+        review="$(echo "$pr_info" | jq -r '.reviewDecision')"
+        mergeable="$(echo "$pr_info" | jq -r '.mergeable')"
+        url="$(echo "$pr_info" | jq -r '.url')"
+
+        echo -e "  ${BOLD}${title}${RESET}"
+        echo -e "  ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | state: ${state}${RESET}"
+        echo -e "  ${DIM}review: ${review} | mergeable: ${mergeable}${RESET}"
+        echo -e "  ${DIM}${url}${RESET}"
+        echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
+
+        echo ""
+        echo -e "  ${BOLD}1)${RESET}  View CI status"
+        echo -e "  ${BOLD}2)${RESET}  View diff"
+        echo -e "  ${BOLD}3)${RESET}  Approve PR"
+        echo -e "  ${BOLD}4)${RESET}  Merge PR (${MERGE_STRATEGY})"
+        echo -e "  ${BOLD}5)${RESET}  Pull branch locally"
+        echo -e "  ${BOLD}6)${RESET}  Approve + Merge + Pull (full workflow)"
+        echo -e "  ${BOLD}7)${RESET}  Open in browser"
+        echo -e "  ${BOLD}0)${RESET}  Back / Exit"
+        echo ""
+
+        read -rp "$(echo -e "${BOLD}Action: ${RESET}")" action
+
+        case "$action" in
+            1)
+                echo ""
+                log_info "Checking CI status for PR #${pr_number}..."
+                gh pr checks "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || true
+                ;;
+            2)
+                echo ""
+                gh pr diff "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || true
+                ;;
+            3)
+                echo ""
+                approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                ;;
+            4)
+                echo ""
+                merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                ;;
+            5)
+                echo ""
+                pull_pr "$pr_number" "$branch" "$base" ${repo_args[@]+"${repo_args[@]}"}
+                ;;
+            6)
+                echo ""
+                local success=true
+                approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                if $success; then
+                    merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                fi
+                if $success; then
+                    pull_pr "$pr_number" "$branch" "$base" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                fi
+                if $success; then
+                    echo ""
+                    log_success "Full workflow completed for PR #${pr_number}!"
+                    return 0
+                else
+                    log_warn "Workflow did not complete fully"
+                fi
+                ;;
+            7)
+                gh pr view "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --web || true
+                ;;
+            0|"")
+                return 0
+                ;;
+            *)
+                log_error "Unknown action: $action"
+                ;;
+        esac
+    done
+}
+
+approve_pr() {
+    local pr_number="$1"
+    shift
+    local repo_args=("$@")
+
+    log_info "Approving PR #${pr_number}..."
+    if gh pr review "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --approve; then
+        log_success "PR #${pr_number} approved"
+    else
+        log_error "Failed to approve PR #${pr_number}"
+        return 1
+    fi
+}
+
+merge_pr() {
+    local pr_number="$1"
+    shift
+    local repo_args=("$@")
+
+    local merge_flag="--squash"
+    case "$MERGE_STRATEGY" in
+        squash)   merge_flag="--squash" ;;
+        merge)    merge_flag="--merge" ;;
+        rebase)   merge_flag="--rebase" ;;
+        *)
+            log_error "Unknown merge strategy: $MERGE_STRATEGY"
+            return 1
+            ;;
+    esac
+
+    log_info "Merging PR #${pr_number} (strategy: ${MERGE_STRATEGY})..."
+    if gh pr merge "$pr_number" ${repo_args[@]+"${repo_args[@]}"} "$merge_flag" --delete-branch; then
+        log_success "PR #${pr_number} merged"
+    else
+        log_error "Failed to merge PR #${pr_number}"
+        return 1
+    fi
+}
+
+pull_pr() {
+    local pr_number="$1"
+    shift
+    local branch="$1"
+    shift
+    local base="$1"
+    shift
+    local repo_args=("$@")
+
+    if [[ -n "$REPO" ]]; then
+        log_warn "Cannot pull when using --repo flag (different remote)"
+        log_info "Switch to the repo directory and run: git checkout $base && git pull"
+        return 0
+    fi
+
+    log_info "Switching to ${base} and pulling..."
+    if git checkout "$base" && git pull; then
+        log_success "Pulled latest ${base}"
+    else
+        log_error "Failed to checkout/pull ${base}"
+        return 1
+    fi
+}
+
+main() {
+    local command=""
+    local remaining_args=()
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            list|status|review)
+                command="$1"
+                shift
+                break
+                ;;
+            help|--help|-h)
+                usage
+                exit 0
+                ;;
+            --version)
+                version
+                exit 0
+                ;;
+            -R|--repo)
+                REPO="$2"
+                shift 2
+                ;;
+            -A|--author)
+                AUTHOR="$2"
+                shift 2
+                ;;
+            -l|--label)
+                LABEL="$2"
+                shift 2
+                ;;
+            -s|--state)
+                STATE="$2"
+                shift 2
+                ;;
+            -L|--limit)
+                LIMIT="$2"
+                shift 2
+                ;;
+            -S|--search)
+                SEARCH="$2"
+                shift 2
+                ;;
+            --merge-strategy)
+                MERGE_STRATEGY="$2"
+                shift 2
+                ;;
+            *)
+                remaining_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    while [[ $# -gt 0 ]]; do
+        remaining_args+=("$1")
+        shift
+    done
+
+    case "$command" in
+        list)
+            cmd_list
+            ;;
+        status)
+            cmd_status "${remaining_args[0]:-}"
+            ;;
+        review)
+            cmd_review
+            ;;
+        "")
+            usage
+            exit 0
+            ;;
+    esac
+}
+
+main "$@"

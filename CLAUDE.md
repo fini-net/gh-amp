@@ -4,7 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Purpose
 
-This is a GitHub repository template that implements best practices for open source projects. It's designed to be cloned and customized for new repositories. The template includes GitHub community standards compliance, automated workflows, and a command-line driven development process.
+This is `gh-amp`, a GitHub CLI extension that streamlines the PR review workflow
+by providing an interactive interface to approve, merge, and pull PRs. The name
+`amp` stands for **Approve, Merge, Pull**.
+
+## Architecture
+
+The extension is a single bash script (`gh-amp`) that implements three subcommands:
+
+- **`gh amp list`** -- List pull requests with filters (author, label, state, search, repo)
+- **`gh amp status [PR]`** -- Show CI status for a PR (or current branch's PR)
+- **`gh amp review`** -- Interactive workflow: select a PR, then approve/merge/pull
+
+The script uses `gh` CLI commands under the hood (`gh pr list`, `gh pr checks`,
+`gh pr review --approve`, `gh pr merge`, `gh pr view`) and `jq` for JSON parsing.
 
 ## Development Workflow
 
@@ -200,20 +213,14 @@ Configuration in `.markdownlint.yml`:
 
 Run locally: `markdownlint-cli2 **/*.md`
 
-## Template customization
+## Installation and testing
 
-When using this template for a new project:
+- Install locally: `gh extension install .` (from repo root) or `just install`
+- Uninstall: `gh extension remove gh-amp` or `just uninstall`
+- Run directly: `./gh-amp list` or `just run list`
+- Run shellcheck on the script: `just shellcheck-amp`
 
-1. Search and replace:
-   - `fini-net` → your GitHub org
-   - `template-repo` → your repo name
-   - `chicks-net` → your username (especially in `.github/workflows/auto-assign.yml`)
-2. Update `.repo.toml` with your repository metadata
-3. Run `just clean_template` to strip template documentation and files from README
-4. Run `just cue-sync-from-github` to sync description and topics from GitHub
-5. Run `just compliance_check` to verify all community standards files are in place
-
-## Important implementation notes
+## Dependencies
 
 - All git commands in `.just/gh-process.just` use standard git (no aliases required)
 - The `pr` recipe runs optional pre-PR hooks if `.just/pr-hook.just` exists
@@ -232,6 +239,7 @@ When using this template for a new project:
 - `just` - Command runner for all recipes
 - `gh` - GitHub CLI for PR and release management
 - `git` - Version control
+- `jq` - JSON processor (used by `gh-amp` for parsing PR data)
 
 ### Optional tools
 

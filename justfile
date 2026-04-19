@@ -14,4 +14,41 @@ import? '.just/template-sync.just'
 [group('Utility')]
 list:
 	just --list
-	@echo "{{GREEN}}Your justfile is waiting for more scripts and snippets{{NORMAL}}"
+	@echo "{{GREEN}}Welcome to gh-amp!{{NORMAL}}"
+
+# install the extension locally for testing
+[group('Development')]
+install:
+	gh extension install .
+
+# uninstall the local extension
+[group('Development')]
+uninstall:
+	gh extension remove gh-amp
+
+# run amp locally (without installing)
+[group('Development')]
+run *ARGS:
+	./gh-amp {{ARGS}}
+
+# run shellcheck on the extension script
+[group('Quality')]
+shellcheck-amp:
+	shellcheck -x -s bash gh-amp
+
+# dev cycle
+[group('Development')]
+build: shellcheck-amp uninstall && install
+	# all in header
+
+# test list
+[group('Development')]
+[working-directory: '../gh-observer/']
+test_list:
+	gh amp list
+
+# test review
+[group('Development')]
+[working-directory: '../gh-observer/']
+test_review:
+	gh amp review
