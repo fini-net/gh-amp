@@ -468,12 +468,15 @@ main() {
 
     case "$command" in
         list)
+            check_dependencies
             cmd_list
             ;;
         status)
+            check_dependencies
             cmd_status "${remaining_args[0]:-}"
             ;;
         review)
+            check_dependencies
             cmd_review
             ;;
         "")
@@ -483,5 +486,4 @@ main() {
     esac
 }
 
-check_dependencies
 main "$@"
