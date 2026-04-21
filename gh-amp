@@ -244,7 +244,7 @@ review_pr() {
         echo -e "${BOLD}  PR #${pr_number}${RESET}"
 
         local pr_info
-        pr_info="$(gh pr view "$pr_number" "${repo_args[@]}" --json title,author,headRefName,baseRefName,state,reviewDecision,mergeable,url 2>/dev/null)" || {
+        pr_info="$(gh pr view "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --json title,author,headRefName,baseRefName,state,reviewDecision,mergeable,url 2>/dev/null)" || {
             log_error "Could not fetch PR #$pr_number"
             return 1
         }
