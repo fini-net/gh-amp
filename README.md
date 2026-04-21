@@ -49,6 +49,9 @@ gh amp status
 gh amp status 42
 
 # Show status for a PR in a different repo
+gh amp -R fini-net/gh-amp status 42
+
+# Show status with a different order of arguments
 gh amp status 42 -R fini-net/gh-amp
 ```
 
@@ -71,15 +74,14 @@ gh amp review --author @me
 gh amp review --merge-strategy rebase
 ```
 
-The review command presents a menu with options to:
+The review command shows the PR diff, then presents a menu with options to:
 
 1. View CI status
-2. View diff
-3. Approve PR
-4. Merge PR (configurable strategy: squash, merge, or rebase)
-5. Pull branch locally
-6. Approve + Merge + Pull (full workflow)
-7. Open in browser
+2. Approve PR
+3. Merge PR (configurable strategy: squash, merge, or rebase)
+4. Sync base branch (checkout and pull the base branch)
+5. Approve + Merge + Sync (full workflow)
+6. Open in browser
 
 ## Flags
 

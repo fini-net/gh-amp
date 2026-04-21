@@ -24,7 +24,7 @@ install:
 # uninstall the local extension
 [group('Development')]
 uninstall:
-	gh extension remove gh-amp
+	-gh extension remove gh-amp
 
 # run amp locally (without installing)
 [group('Development')]
@@ -42,13 +42,13 @@ build: shellcheck-amp uninstall && install
 	# all in header
 
 # test list
-[group('Development')]
 [working-directory: '../gh-observer/']
+[group('Development')]
 test_list:
 	gh amp list
 
 # test review
-[group('Development')]
 [working-directory: '../gh-observer/']
+[group('Development')]
 test_review:
 	gh amp review
