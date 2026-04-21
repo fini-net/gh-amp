@@ -50,6 +50,9 @@ gh amp status 42
 
 # Show status for a PR in a different repo
 gh amp -R fini-net/gh-amp status 42
+
+# Show status with a different order of arguments
+gh amp status 42 -R fini-net/gh-amp
 ```
 
 ### `gh amp review`
