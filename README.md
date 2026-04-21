@@ -8,6 +8,8 @@
 A GitHub CLI extension that streamlines the PR review workflow. `amp` stands for
 **Approve, Merge, Pull** -- the three actions that make up the core PR workflow.
 
+![gh amp banner image](docs/gh-amp-banner.png)
+
 ## Installation
 
 ```bash
