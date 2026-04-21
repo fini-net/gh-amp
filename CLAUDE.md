@@ -30,7 +30,7 @@ Key functions and their roles:
 - `pr_list_args()` -- Builds a shared `gh pr list` args array from globals (used by both `cmd_list` and `select_pr`)
 - `select_pr()` -- Interactive numbered menu; prints PR number to stdout for capture by caller
 - `review_pr()` -- Infinite loop presenting a numbered action menu for a single PR
-- `approve_pr()` / `merge_pr()` / `pull_pr()` -- Individual action steps called by the review loop
+- `approve_pr()` / `merge_pr()` / `pull_pr()` -- Individual action steps called by the review loop. `pull_pr()` checks out and pulls the base branch to sync it locally.
 
 ## Development Commands
 

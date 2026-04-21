@@ -12,6 +12,19 @@ CYAN="\033[36m"
 DIM="\033[2m"
 RESET="\033[0m"
 
+sanitize() {
+    printf '%s' "$1" | sed 's/\x1b\[[0-9;]*m//g'
+}
+
+check_dependencies() {
+    for cmd in gh jq; do
+        if ! command -v "$cmd" &>/dev/null; then
+            echo "Error: Required command '$cmd' not found. Please install it first." >&2
+            exit 1
+        fi
+    done
+}
+
 REPO=""
 STATE="open"
 LIMIT=30
@@ -174,10 +187,10 @@ select_pr() {
     while IFS= read -r line; do
         local num title author branch base review mergeable
         num="$(echo "$line" | jq -r '.number')"
-        title="$(echo "$line" | jq -r '.title')"
-        author="$(echo "$line" | jq -r '.author.login')"
-        branch="$(echo "$line" | jq -r '.headRefName')"
-        base="$(echo "$line" | jq -r '.baseRefName')"
+        title="$(sanitize "$(echo "$line" | jq -r '.title')")"
+        author="$(sanitize "$(echo "$line" | jq -r '.author.login')")"
+        branch="$(sanitize "$(echo "$line" | jq -r '.headRefName')")"
+        base="$(sanitize "$(echo "$line" | jq -r '.baseRefName')")"
         review="$(echo "$line" | jq -r '.reviewDecision')"
         mergeable="$(echo "$line" | jq -r '.mergeable')"
 
@@ -231,16 +244,16 @@ review_pr() {
         echo -e "${BOLD}  PR #${pr_number}${RESET}"
 
         local pr_info
-        pr_info="$(gh pr view "$pr_number" ${repo_args[@]+${repo_args[@]+"${repo_args[@]}"}} --json title,author,headRefName,baseRefName,state,reviewDecision,mergeable,url 2>/dev/null)" || {
+        pr_info="$(gh pr view "$pr_number" "${repo_args[@]}" --json title,author,headRefName,baseRefName,state,reviewDecision,mergeable,url 2>/dev/null)" || {
             log_error "Could not fetch PR #$pr_number"
             return 1
         }
 
         local title author branch base state review mergeable url
-        title="$(echo "$pr_info" | jq -r '.title')"
-        author="$(echo "$pr_info" | jq -r '.author.login')"
-        branch="$(echo "$pr_info" | jq -r '.headRefName')"
-        base="$(echo "$pr_info" | jq -r '.baseRefName')"
+        title="$(sanitize "$(echo "$pr_info" | jq -r '.title')")"
+        author="$(sanitize "$(echo "$pr_info" | jq -r '.author.login')")"
+        branch="$(sanitize "$(echo "$pr_info" | jq -r '.headRefName')")"
+        base="$(sanitize "$(echo "$pr_info" | jq -r '.baseRefName')")"
         state="$(echo "$pr_info" | jq -r '.state')"
         review="$(echo "$pr_info" | jq -r '.reviewDecision')"
         mergeable="$(echo "$pr_info" | jq -r '.mergeable')"
@@ -260,8 +273,8 @@ review_pr() {
         echo -e "  ${BOLD}1)${RESET}  View CI status"
         echo -e "  ${BOLD}2)${RESET}  Approve PR"
         echo -e "  ${BOLD}3)${RESET}  Merge PR (${MERGE_STRATEGY})"
-        echo -e "  ${BOLD}4)${RESET}  Pull branch locally"
-        echo -e "  ${BOLD}5)${RESET}  Approve + Merge + Pull (full workflow)"
+        echo -e "  ${BOLD}4)${RESET}  Sync base branch (${base})"
+        echo -e "  ${BOLD}5)${RESET}  Approve + Merge + Sync (full workflow)"
         echo -e "  ${BOLD}6)${RESET}  Open in browser"
         echo -e "  ${BOLD}0)${RESET}  Back / Exit"
         echo ""
@@ -380,6 +393,14 @@ pull_pr() {
     fi
 }
 
+validate_flag_value() {
+    if [[ $# -lt 2 || -z "${2-}" ]]; then
+        echo "Error: $1 requires a value." >&2
+        usage
+        exit 1
+    fi
+}
+
 main() {
     local command=""
     local remaining_args=()
@@ -389,7 +410,6 @@ main() {
             list|status|review)
                 command="$1"
                 shift
-                break
                 ;;
             help|--help|-h)
                 usage
@@ -400,43 +420,50 @@ main() {
                 exit 0
                 ;;
             -R|--repo)
+                validate_flag_value "$@"
                 REPO="$2"
                 shift 2
                 ;;
             -A|--author)
+                validate_flag_value "$@"
                 AUTHOR="$2"
                 shift 2
                 ;;
             -l|--label)
+                validate_flag_value "$@"
                 LABEL="$2"
                 shift 2
                 ;;
             -s|--state)
+                validate_flag_value "$@"
                 STATE="$2"
                 shift 2
                 ;;
             -L|--limit)
+                validate_flag_value "$@"
                 LIMIT="$2"
                 shift 2
                 ;;
             -S|--search)
+                validate_flag_value "$@"
                 SEARCH="$2"
                 shift 2
                 ;;
             --merge-strategy)
+                validate_flag_value "$@"
                 MERGE_STRATEGY="$2"
                 shift 2
                 ;;
             *)
+                if [[ -z "$command" ]]; then
+                    echo "Error: Unknown argument: $1" >&2
+                    usage
+                    exit 1
+                fi
                 remaining_args+=("$1")
                 shift
                 ;;
         esac
-    done
-
-    while [[ $# -gt 0 ]]; do
-        remaining_args+=("$1")
-        shift
     done
 
     case "$command" in
@@ -456,4 +483,5 @@ main() {
     esac
 }
 
+check_dependencies
 main "$@"
