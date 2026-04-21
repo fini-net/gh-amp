@@ -3,14 +3,14 @@ set -euo pipefail
 
 VERSION="0.1.0"
 
-BOLD="\033[1m"
-GREEN="\033[32m"
-YELLOW="\033[33m"
-RED="\033[31m"
-BLUE="\033[34m"
-CYAN="\033[36m"
-DIM="\033[2m"
-RESET="\033[0m"
+BOLD=$'\033[1m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+RED=$'\033[31m'
+BLUE=$'\033[34m'
+CYAN=$'\033[36m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
 
 sanitize() {
     printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g'
