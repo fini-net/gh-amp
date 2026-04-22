@@ -24,9 +24,12 @@ but it is not required.
 gh extension install fini-net/gh-observer
 ```
 
+`gh-observer` provides a more informative and attractive summary of the
+GitHub Actions that hae run on a pull request.
+
 ### Pre-requisites
 
-For using this tool you will need to have `jq` installled.  On MacOS:
+For using this tool you will need to have `jq` installed.  On MacOS:
 
 ```bash
 brew install jq
