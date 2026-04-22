@@ -56,7 +56,7 @@ Here is an animation showing `gh amp review` on a PR in the
 ### `gh amp review`
 
 Interactive workflow: select a PR, view its details, then approve, merge, and
-pull it.  This is the core functionality that I wanted.
+pull it.  This is the primary use case for the extension.
 
 ```bash
 # Interactive review for current repo
