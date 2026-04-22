@@ -35,6 +35,12 @@ For using this tool you will need to have `jq` installed.  On MacOS:
 brew install jq
 ```
 
+For Debian/Ubuntu-based Linux you can install it with:
+
+```bash
+sudo apt-get install jq
+```
+
 For developing in this repo, the `.just/lib/install-prerequisites.sh`
 script will take care of installing everything.
 
