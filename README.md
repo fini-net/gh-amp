@@ -16,7 +16,54 @@ A GitHub CLI extension that streamlines the PR review workflow. `amp` stands for
 gh extension install fini-net/gh-amp
 ```
 
+For the best experience with `gh-amp` we recommend you install our
+[other github extension "gh-observer"](https://github.com/fini-net/gh-observer),
+but it is not required.
+
+```bash
+gh extension install fini-net/gh-observer
+```
+
+### Pre-requisites
+
+For using this tool you will need to have `jq` installled.  On MacOS:
+
+```bash
+brew install jq
+```
+
+For developing in this repo, the `.just/lib/install-prerequisites.sh`
+script will take care of installing everything.
+
 ## Commands
+
+### `gh amp review`
+
+Interactive workflow: select a PR, view its details, then approve, merge, and
+pull it.
+
+```bash
+# Interactive review for current repo
+gh amp review
+
+# Review PRs in a specific repo
+gh amp review -R fini-net/gh-amp
+
+# Review only PRs by a specific author
+gh amp review --author @me
+
+# Review with a different merge strategy
+gh amp review --merge-strategy rebase
+```
+
+The review command shows the PR diff, then presents a menu with options to:
+
+1. View CI status
+2. Approve PR
+3. Merge PR (configurable strategy: squash, merge, or rebase)
+4. Sync base branch (checkout and pull the base branch)
+5. Approve + Merge + Sync (full workflow)
+6. Open in browser
 
 ### `gh amp list`
 
@@ -56,34 +103,6 @@ gh amp -R fini-net/gh-amp status 42
 # Show status with a different order of arguments
 gh amp status 42 -R fini-net/gh-amp
 ```
-
-### `gh amp review`
-
-Interactive workflow: select a PR, view its details, then approve, merge, and
-pull it.
-
-```bash
-# Interactive review for current repo
-gh amp review
-
-# Review PRs in a specific repo
-gh amp review -R fini-net/gh-amp
-
-# Review only PRs by a specific author
-gh amp review --author @me
-
-# Review with a different merge strategy
-gh amp review --merge-strategy rebase
-```
-
-The review command shows the PR diff, then presents a menu with options to:
-
-1. View CI status
-2. Approve PR
-3. Merge PR (configurable strategy: squash, merge, or rebase)
-4. Sync base branch (checkout and pull the base branch)
-5. Approve + Merge + Sync (full workflow)
-6. Open in browser
 
 ## Flags
 
