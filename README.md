@@ -44,12 +44,19 @@ sudo apt-get install jq
 For developing in this repo, the `.just/lib/install-prerequisites.sh`
 script will take care of installing everything.
 
+## Demo
+
+Here is an animation showing `gh amp review` on a PR in the
+[gh-observer repo](https://github.com/fini-net/gh-observer):
+
+![animation of gh amp review](docs/review-demo.gif)
+
 ## Commands
 
 ### `gh amp review`
 
 Interactive workflow: select a PR, view its details, then approve, merge, and
-pull it.
+pull it.  This is the core functionality that I wanted.
 
 ```bash
 # Interactive review for current repo
