@@ -51,6 +51,12 @@ Here is an animation showing `gh amp review` on a PR in the
 
 ![animation of gh amp review](docs/review-demo.gif)
 
+Note: that I'm merging a PR with known CI failures because the
+[gh-observer repo](https://github.com/fini-net/gh-observer) includes
+[`Super-Linter`](https://github.com/super-linter/super-linter)
+to make sure that there are some CI failures every time so that the failure
+display functionality of `gh observer` is being tested on every pull request.
+
 ## Commands
 
 ### `gh amp review`
