@@ -44,12 +44,26 @@ sudo apt-get install jq
 For developing in this repo, the `.just/lib/install-prerequisites.sh`
 script will take care of installing everything.
 
+## Demo
+
+Here is an animation showing `gh amp review` on a PR in the
+[gh-observer repo](https://github.com/fini-net/gh-observer):
+
+![animation of gh amp review](docs/review-demo.gif)
+
+Note: this demo merges a PR with known CI failures because the
+[gh-observer repo](https://github.com/fini-net/gh-observer) uses
+[`Super-Linter`](https://github.com/super-linter/super-linter) and
+intentionally keeps some linting failures active to exercise CI
+status display. `gh amp` correctly reports these failures — the
+merge proceeds because the failures are expected in that repo.
+
 ## Commands
 
 ### `gh amp review`
 
 Interactive workflow: select a PR, view its details, then approve, merge, and
-pull it.
+pull it. This is the primary use case for the extension.
 
 ```bash
 # Interactive review for current repo
