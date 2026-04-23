@@ -63,7 +63,7 @@ merge proceeds because the failures are expected in that repo.
 ### `gh amp review`
 
 Interactive workflow: select a PR, view its details, then approve, merge, and
-pull it.  This is the primary use case for the extension.
+pull it. This is the primary use case for the extension.
 
 ```bash
 # Interactive review for current repo
