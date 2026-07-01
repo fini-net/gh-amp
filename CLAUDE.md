@@ -27,9 +27,10 @@ so flags can appear anywhere on the command line before the subcommand name.
 
 Key functions and their roles:
 
+- `sanitize()` -- Strips ANSI color codes from strings; used before displaying jq-extracted values in the menu to prevent escape code leakage
 - `pr_list_args()` -- Builds a shared `gh pr list` args array from globals (used by both `cmd_list` and `select_pr`)
 - `select_pr()` -- Interactive numbered menu; prints PR number to stdout for capture by caller
-- `review_pr()` -- Infinite loop presenting a numbered action menu for a single PR
+- `review_pr()` -- Infinite loop presenting a numbered action menu for a single PR; shows full PR diff before the menu on each iteration
 - `approve_pr()` / `merge_pr()` / `pull_pr()` -- Individual action steps called by the review loop. `pull_pr()` checks out and pulls the base branch to sync it locally.
 
 ## Development Commands
@@ -37,9 +38,19 @@ Key functions and their roles:
 ### Extension development
 
 - `just run <args>` - Run `./gh-amp` directly without installing (e.g., `just run list`)
+- `just build` - Full dev cycle: shellcheck, uninstall, reinstall
 - `just install` - Install locally via `gh extension install .`
 - `just uninstall` - Remove with `gh extension remove gh-amp`
 - `just shellcheck-amp` - Run shellcheck on the `gh-amp` script
+
+### Testing
+
+The test recipes run from `../gh-observer/` (requires that repo checked out as a sibling):
+
+- `just test_list` - Run `gh amp list` against gh-observer repo
+- `just test_review` - Run `gh amp review` against gh-observer repo
+
+Install all development prerequisites with `.just/lib/install-prerequisites.sh`.
 
 ### Standard development cycle
 
@@ -164,13 +175,16 @@ The system uses core scripts in `.just/lib/`: `generate_checksums.sh`, `template
 
 Workflows in `.github/workflows/`:
 
-- **markdownlint.yml** - Enforces markdown standards using `markdownlint-cli2`
-- **checkov.yml** - Security scanning for GitHub Actions (continues on error, outputs SARIF)
 - **actionlint.yml** - Lints GitHub Actions workflow files
 - **auto-assign.yml** - Automatically assigns issues/PRs to `chicks-net`
+- **checkov.yml** - Security scanning for GitHub Actions (continues on error, outputs SARIF)
 - **claude-code-review.yml** - Claude AI review automation
+- **claude.yml** - Claude Code interactive integration (issue/PR comment triggers)
 - **cue-verify.yml** - Validates `.repo.toml` format and flags
-- **template-sync.yml** - Tests template synchronization system
+- **dependency-review.yml** - Scans PR dependency changes for known vulnerabilities
+- **markdownlint.yml** - Enforces markdown standards using `markdownlint-cli2`
+- **scorecards.yml** - OSSF Scorecard supply-chain security analysis
+- **zizmor.yml** - GHA security analysis with zizmor
 
 ### Markdown linting
 
