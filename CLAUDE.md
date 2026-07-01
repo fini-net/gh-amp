@@ -175,12 +175,16 @@ The system uses core scripts in `.just/lib/`: `generate_checksums.sh`, `template
 
 Workflows in `.github/workflows/`:
 
-- **markdownlint.yml** - Enforces markdown standards using `markdownlint-cli2`
-- **checkov.yml** - Security scanning for GitHub Actions (continues on error, outputs SARIF)
 - **actionlint.yml** - Lints GitHub Actions workflow files
 - **auto-assign.yml** - Automatically assigns issues/PRs to `chicks-net`
+- **checkov.yml** - Security scanning for GitHub Actions (continues on error, outputs SARIF)
 - **claude-code-review.yml** - Claude AI review automation
+- **claude.yml** - Claude Code interactive integration (issue/PR comment triggers)
 - **cue-verify.yml** - Validates `.repo.toml` format and flags
+- **dependency-review.yml** - Scans PR dependency changes for known vulnerabilities
+- **markdownlint.yml** - Enforces markdown standards using `markdownlint-cli2`
+- **scorecards.yml** - OSSF Scorecard supply-chain security analysis
+- **zizmor.yml** - GHA security analysis with zizmor
 
 ### Markdown linting
 
