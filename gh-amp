@@ -119,7 +119,200 @@ pr_list_args() {
     printf '%s\n' "${args[@]}"
 }
 
-cmd_list() {
+resolve_owner_repo() {
+    # Resolve OWNER/REPO for GraphQL from $REPO (or the current repo when unset).
+    # Prints "owner name" on stdout, or nothing on failure (graceful degradation).
+    # Handles the documented [HOST/]OWNER/REPO form for --repo.
+    local repo_target="$REPO"
+    if [[ -z "$repo_target" ]]; then
+        repo_target="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" || true
+    fi
+    [[ -z "$repo_target" ]] && return 0
+
+    # Strip a host prefix if present. A host-prefixed target has exactly two
+    # slashes (host/owner/repo); the plain form has one (owner/repo). Stripping
+    # a single leading segment yields owner/repo in both cases.
+    if [[ "$repo_target" == */*/* ]]; then
+        repo_target="${repo_target#*/}"
+    fi
+
+    local owner name
+    owner="${repo_target%%/*}"
+    name="${repo_target#*/}"
+    if [[ -z "$owner" || -z "$name" || "$owner" == "$repo_target" ]]; then
+        return 0
+    fi
+    printf '%s %s' "$owner" "$name"
+}
+
+refine_checks_status() {
+    # Refine a BLOCKED/UNSTABLE/DIRTY mergeStateStatus using required checks.
+    # Reads required-check buckets from `gh pr checks --required` and prints
+    # one of: failing | pending | passing
+    # Degradation: on any error, prints "pending". This path is only reached
+    # when mergeStateStatus is BLOCKED/UNSTABLE/DIRTY (GitHub already signaled
+    # something blocks merge), so a fetch failure must not be reported as
+    # "passing" -- that would be the misleading green light issue #21 fixed.
+    # Note: `gh pr checks --required --json bucket` requires a recent gh CLI;
+    # an older client hits this same fallback and will see "pending".
+    #
+    # Trade-off (N+1 calls): BLOCKED is the common state for PRs awaiting
+    # review, so `gh amp list` (default --limit 30) with many such PRs will
+    # fire up to ~30 sequential `gh pr checks --required` subprocess + API
+    # round trips on top of the single batched GraphQL query. This is the
+    # accepted cost of surfacing required-check signal next to mergeable; if
+    # list latency bites in practice, cap the count or parallelize the calls
+    # here (e.g. via background jobs / xargs -P).
+    local pr_number="$1"
+
+    local repo_args=()
+    if [[ -n "$REPO" ]]; then
+        repo_args+=(--repo "$REPO")
+    fi
+
+    local buckets
+    buckets="$(gh pr checks "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --required --json bucket 2>/dev/null)" || {
+        printf 'pending'
+        return 0
+    }
+
+    if [[ -z "$buckets" || "$buckets" == "[]" ]]; then
+        # No required checks configured -> nothing required, treat as passing.
+        printf 'passing'
+        return 0
+    fi
+
+    if printf '%s' "$buckets" | jq -e 'any(.[]; .bucket == "fail" or .bucket == "cancel")' >/dev/null 2>&1; then
+        printf 'failing'
+        return 0
+    fi
+    if printf '%s' "$buckets" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1; then
+        printf 'pending'
+        return 0
+    fi
+    printf 'passing'
+}
+
+checks_status() {
+    # Print the required-check status for a single PR: passing|pending|failing|<empty>
+    # Uses GraphQL mergeStateStatus as the primary signal and refines
+    # BLOCKED/UNSTABLE/DIRTY with `gh pr checks --required`.
+    # Empty output means the status could not be determined (graceful degradation).
+    local pr_number="$1"
+
+    local resolved owner name
+    resolved="$(resolve_owner_repo)" || true
+    [[ -z "$resolved" ]] && return 0
+    read -r owner name <<< "$resolved"
+
+    local mss
+    # shellcheck disable=SC2016
+    mss="$(gh api graphql \
+        -F owner="$owner" -F name="$name" -F pr="$pr_number" \
+        -f query='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){mergeStateStatus}}}' \
+        --jq '.data.repository.pullRequest.mergeStateStatus' 2>/dev/null)" || true
+
+    case "$mss" in
+        CLEAN|BEHIND|HAS_HOOKS) printf 'passing' ;;
+        UNKNOWN) printf 'pending' ;;
+        BLOCKED|UNSTABLE|DIRTY) refine_checks_status "$pr_number" ;;
+        DRAFT)
+            # Draft PRs have no required-check signal worth surfacing.
+            return 0
+            ;;
+        *)
+            # Unhandled mergeStateStatus (including empty) -> degrade silently.
+            return 0
+            ;;
+    esac
+}
+
+batch_checks_status() {
+    # Print required-check status for multiple PRs in one GraphQL query.
+    # Input: newline-delimited PR numbers on stdin.
+    # Output: "<num> <status>" lines, one per input number.
+    # Status is one of passing|pending|failing|<empty on error/degradation>.
+    local nums=()
+    local n
+    while IFS= read -r n; do
+        [[ -z "$n" ]] && continue
+        nums+=("$n")
+    done
+    (( ${#nums[@]} == 0 )) && return 0
+
+    # Filter to numeric PR numbers so the splice into the GraphQL query string
+    # below stays safe. nums come from `gh pr list --json number` (trusted),
+    # but make that assumption explicit rather than implicit.
+    local filtered=()
+    for n in "${nums[@]}"; do
+        [[ "$n" =~ ^[0-9]+$ ]] && filtered+=("$n")
+    done
+    nums=("${filtered[@]}")
+    (( ${#nums[@]} == 0 )) && return 0
+
+    local resolved owner name
+    resolved="$(resolve_owner_repo)" || true
+    if [[ -z "$resolved" ]]; then
+        # Cannot resolve repo -> emit empty status per PR.
+        for n in "${nums[@]}"; do printf '%s \n' "$n"; done
+        return 0
+    fi
+    read -r owner name <<< "$resolved"
+
+    # Build a GraphQL query with one alias per PR number.
+    # shellcheck disable=SC2016
+    local query='query($owner:String!,$name:String!){ repository(owner:$owner,name:$name){'
+    local idx=1
+    for n in "${nums[@]}"; do
+        # Aliases must match /^[_A-Za-z][_0-9A-Za-z]*$/ -> use "pr" prefix.
+        query+=" pr${idx}: pullRequest(number:${n}){ mergeStateStatus }"
+        ((idx++)) || true
+    done
+    query+=' } }'
+
+    local data
+    data="$(gh api graphql -F owner="$owner" -F name="$name" -f query="$query" 2>/dev/null)" || {
+        for n in "${nums[@]}"; do printf '%s \n' "$n"; done
+        return 0
+    }
+
+    idx=1
+    for n in "${nums[@]}"; do
+        local mss
+        mss="$(printf '%s' "$data" | jq -r ".data.repository.pr${idx}.mergeStateStatus // \"\"" 2>/dev/null)" || mss=""
+        local status=""
+        case "$mss" in
+            CLEAN|BEHIND|HAS_HOOKS) status="passing" ;;
+            UNKNOWN) status="pending" ;;
+            BLOCKED|UNSTABLE|DIRTY)
+                status="$(refine_checks_status "$n")"
+                ;;
+            DRAFT)
+                # Draft PRs have no required-check signal worth surfacing.
+                status=""
+                ;;
+            *)
+                # Unhandled mergeStateStatus (including empty) -> degrade silently.
+                status=""
+                ;;
+        esac
+        printf '%s %s\n' "$n" "$status"
+        ((idx++)) || true
+    done
+}
+
+color_for_status() {
+    case "$1" in
+        passing) printf '%s' "$GREEN" ;;
+        pending) printf '%s' "$YELLOW" ;;
+        failing) printf '%s' "$RED" ;;
+        *) printf '%s' "$RESET" ;;
+    esac
+}
+
+fetch_prs_json() {
+    # Print the `gh pr list` JSON for the current filter globals, or nothing.
+    # Shared by cmd_list and select_pr to avoid drift in the args construction.
     local gh_args=(pr list)
     local filter_args
     filter_args="$(pr_list_args)"
@@ -127,11 +320,57 @@ cmd_list() {
         gh_args+=("$arg")
     done <<< "$filter_args"
 
-    gh_args+=("--json" "number,title,author,state,updatedAt,headRefName,baseRefName,reviewDecision,mergeable")
-    gh_args+=(--template '{{range .}}{{tablerow (printf "#%v" .number | autocolor "green") .title (.author.login | autocolor "cyan") .headRefName (.baseRefName | autocolor "yellow") .reviewDecision .mergeable}}{{end}}')
+    gh_args+=("--json" "number,title,author,headRefName,baseRefName,reviewDecision,mergeable")
+
+    gh "${gh_args[@]}"
+}
+
+lookup_check_status() {
+    # Print the checks-status for a PR number looked up in a checks_map
+    # ("<num> <status>" lines as produced by batch_checks_status).
+    # Empty output when the number is absent or status is empty.
+    local num="$1"
+    local checks_map="$2"
+    printf '%s\n' "$checks_map" | awk -v n="$num" '$1==n{$1="";sub(/^ /,"");print;exit}'
+}
+
+cmd_list() {
+    local prs
+    prs="$(fetch_prs_json)"
+
+    if [[ -z "$prs" || "$prs" == "[]" ]]; then
+        return 0
+    fi
+
+    # Batch-fetch required-check status for all listed PRs.
+    local checks_map
+    checks_map="$(printf '%s\n' "$prs" | jq -r '.[].number' | batch_checks_status)" || checks_map=""
 
     echo -e "${BOLD}  PR   Title                                                    Author         Branch                Base            Review        Mergeable${RESET}"
-    gh "${gh_args[@]}"
+
+    while IFS= read -r line; do
+        local num title author_login branch base review mergeable
+        num="$(echo "$line" | jq -r '.number')"
+        title="$(sanitize "$(echo "$line" | jq -r '.title')")"
+        author_login="$(sanitize "$(echo "$line" | jq -r '.author.login')")"
+        branch="$(sanitize "$(echo "$line" | jq -r '.headRefName')")"
+        base="$(sanitize "$(echo "$line" | jq -r '.baseRefName')")"
+        review="$(echo "$line" | jq -r '.reviewDecision')"
+        mergeable="$(echo "$line" | jq -r '.mergeable')"
+
+        local status
+        status="$(lookup_check_status "$num" "$checks_map")" || status=""
+
+        local mergeable_display="${mergeable}"
+        if [[ -n "$status" ]]; then
+            local status_color
+            status_color="$(color_for_status "$status")"
+            mergeable_display="${mergeable} (checks: ${status_color}${status}${RESET})"
+        fi
+
+        printf "  ${GREEN}%-6s${RESET} %-55s ${CYAN}%-14s${RESET} %-21s ${YELLOW}%-15s${RESET} %-14s %s\n" \
+            "#${num}" "$title" "$author_login" "$branch" "$base" "$review" "$mergeable_display"
+    done <<< "$(echo "$prs" | jq -c '.[]')"
 }
 
 cmd_status() {
@@ -161,22 +400,17 @@ cmd_review() {
 }
 
 select_pr() {
-    local gh_args=(pr list)
-    local filter_args
-    filter_args="$(pr_list_args)"
-    while IFS= read -r arg; do
-        gh_args+=("$arg")
-    done <<< "$filter_args"
-
-    gh_args+=("--json" "number,title,author,headRefName,baseRefName,reviewDecision,mergeable")
-
     local prs
-    prs="$(gh "${gh_args[@]}")"
+    prs="$(fetch_prs_json)"
 
     if [[ -z "$prs" || "$prs" == "[]" ]]; then
         log_warn "No pull requests found" >&2
         return 1
     fi
+
+    # Batch-fetch required-check status for all listed PRs.
+    local checks_map
+    checks_map="$(printf '%s\n' "$prs" | jq -r '.[].number' | batch_checks_status)" || checks_map=""
 
     echo -e "${BOLD}${CYAN}Select a pull request:${RESET}" >&2
     echo "" >&2
@@ -194,6 +428,9 @@ select_pr() {
         review="$(echo "$line" | jq -r '.reviewDecision')"
         mergeable="$(echo "$line" | jq -r '.mergeable')"
 
+        local status
+        status="$(lookup_check_status "$num" "$checks_map")" || status=""
+
         local review_color="${YELLOW}"
         if [[ "$review" == "APPROVED" ]]; then
             review_color="${GREEN}"
@@ -206,8 +443,15 @@ select_pr() {
             merge_color="${RED}"
         fi
 
+        local status_part=""
+        if [[ -n "$status" ]]; then
+            local status_color
+            status_color="$(color_for_status "$status")"
+            status_part=" (checks: ${status_color}${status}${RESET})"
+        fi
+
         echo -e "  ${BOLD}${i})${RESET}  ${GREEN}#${num}${RESET}  ${title}" >&2
-        echo -e "      ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | review: ${review_color}${review}${RESET} | merge: ${merge_color}${mergeable}${RESET}" >&2
+        echo -e "      ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | review: ${review_color}${review}${RESET} | merge: ${merge_color}${mergeable}${RESET}${status_part}" >&2
 
         numbers+=("$num")
         ((i++)) || true
@@ -259,9 +503,20 @@ review_pr() {
         mergeable="$(echo "$pr_info" | jq -r '.mergeable')"
         url="$(echo "$pr_info" | jq -r '.url')"
 
+        local status
+        status="$(checks_status "$pr_number" || true)"
+        [[ -z "$status" ]] && status=""
+
+        local status_part=""
+        if [[ -n "$status" ]]; then
+            local status_color
+            status_color="$(color_for_status "$status")"
+            status_part=" | checks: ${status_color}${status}${RESET}"
+        fi
+
         echo -e "  ${BOLD}${title}${RESET}"
         echo -e "  ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | state: ${state}${RESET}"
-        echo -e "  ${DIM}review: ${review} | mergeable: ${mergeable}${RESET}"
+        echo -e "  ${DIM}review: ${review} | mergeable: ${mergeable}${RESET}${status_part}"
         echo -e "  ${DIM}${url}${RESET}"
         echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
 
