@@ -149,8 +149,12 @@ refine_checks_status() {
     # Refine a BLOCKED/UNSTABLE/DIRTY mergeStateStatus using required checks.
     # Reads required-check buckets from `gh pr checks --required` and prints
     # one of: failing | pending | passing
-    # Degradation: on any error, prints "passing" (caller treats BLOCKED as
-    # review-related, not check-related).
+    # Degradation: on any error, prints "pending". This path is only reached
+    # when mergeStateStatus is BLOCKED/UNSTABLE/DIRTY (GitHub already signaled
+    # something blocks merge), so a fetch failure must not be reported as
+    # "passing" -- that would be the misleading green light issue #21 fixed.
+    # Note: `gh pr checks --required --json bucket` requires a recent gh CLI;
+    # an older client hits this same fallback and will see "pending".
     #
     # Trade-off (N+1 calls): BLOCKED is the common state for PRs awaiting
     # review, so `gh amp list` (default --limit 30) with many such PRs will
@@ -168,7 +172,7 @@ refine_checks_status() {
 
     local buckets
     buckets="$(gh pr checks "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --required --json bucket 2>/dev/null)" || {
-        printf 'passing'
+        printf 'pending'
         return 0
     }
 
@@ -234,6 +238,16 @@ batch_checks_status() {
         [[ -z "$n" ]] && continue
         nums+=("$n")
     done
+    (( ${#nums[@]} == 0 )) && return 0
+
+    # Filter to numeric PR numbers so the splice into the GraphQL query string
+    # below stays safe. nums come from `gh pr list --json number` (trusted),
+    # but make that assumption explicit rather than implicit.
+    local filtered=()
+    for n in "${nums[@]}"; do
+        [[ "$n" =~ ^[0-9]+$ ]] && filtered+=("$n")
+    done
+    nums=("${filtered[@]}")
     (( ${#nums[@]} == 0 )) && return 0
 
     local resolved owner name
