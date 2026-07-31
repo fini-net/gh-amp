@@ -40,10 +40,13 @@ ${BOLD}gh amp${RESET} - Approve, Merge, Pull workflow for GitHub PRs
 ${BOLD}USAGE${RESET}
     gh amp <command> [flags]
 
+When no command is given, defaults to ${BOLD}review${RESET}.
+
 ${BOLD}COMMANDS${RESET}
     list      List pull requests with optional filters
     status    Show CI status for pull request(s)
     review    Interactive workflow: select PR, view status, approve/merge/pull
+              (default when no command is given)
 
 ${BOLD}FLAGS${RESET}
     -R, --repo [HOST/]OWNER/REPO   Select another repository
@@ -740,13 +743,9 @@ main() {
             check_dependencies
             cmd_status "${remaining_args[0]:-}"
             ;;
-        review)
+        review|"")
             check_dependencies
             cmd_review
-            ;;
-        "")
-            usage
-            exit 0
             ;;
     esac
 }
