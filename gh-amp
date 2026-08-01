@@ -485,6 +485,9 @@ review_pr() {
         repo_args+=(--repo "$REPO")
     fi
 
+    local current_user
+    current_user="$(gh api user --jq .login 2>/dev/null)" || current_user=""
+
     while true; do
         echo ""
         echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
@@ -517,6 +520,11 @@ review_pr() {
             status_part=" | checks: ${status_color}${status}${RESET}"
         fi
 
+        local is_self_authored=false
+        if [[ -n "$current_user" && "$author" == "$current_user" ]]; then
+            is_self_authored=true
+        fi
+
         echo -e "  ${BOLD}${title}${RESET}"
         echo -e "  ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | state: ${state}${RESET}"
         echo -e "  ${DIM}review: ${review} | mergeable: ${mergeable}${RESET}${status_part}"
@@ -529,10 +537,18 @@ review_pr() {
         echo ""
 
         echo -e "  ${BOLD}1)${RESET}  View CI status"
-        echo -e "  ${BOLD}2)${RESET}  Approve PR"
+        if $is_self_authored; then
+            echo -e "  ${BOLD}2)${RESET}  Approve PR ${DIM}(n/a for own PRs)${RESET}"
+        else
+            echo -e "  ${BOLD}2)${RESET}  Approve PR"
+        fi
         echo -e "  ${BOLD}3)${RESET}  Merge PR (${MERGE_STRATEGY})"
         echo -e "  ${BOLD}4)${RESET}  Sync base branch (${base})"
-        echo -e "  ${BOLD}5)${RESET}  Approve + Merge + Sync (full workflow)"
+        if $is_self_authored; then
+            echo -e "  ${BOLD}5)${RESET}  Merge + Sync (full workflow)"
+        else
+            echo -e "  ${BOLD}5)${RESET}  Approve + Merge + Sync (full workflow)"
+        fi
         echo -e "  ${BOLD}6)${RESET}  Open in browser"
         echo -e "  ${BOLD}0)${RESET}  Back / Exit"
         echo ""
@@ -547,7 +563,11 @@ review_pr() {
                 ;;
             2)
                 echo ""
-                approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                if $is_self_authored; then
+                    log_info "Cannot approve your own PR (#${pr_number}) -- GitHub forbids self-approval"
+                else
+                    approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                fi
                 ;;
             3)
                 echo ""
@@ -560,7 +580,11 @@ review_pr() {
             5)
                 echo ""
                 local success=true
-                approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                if $is_self_authored; then
+                    log_info "PR #${pr_number} authored by you -- skipping approval"
+                else
+                    approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                fi
                 if $success; then
                     merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
                 fi
