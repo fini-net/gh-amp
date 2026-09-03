@@ -87,6 +87,7 @@ The review command shows the PR diff, then presents a menu with options to:
 4. Sync base branch (checkout and pull the base branch)
 5. Approve + Merge + Sync (full workflow)
 6. Open in browser
+7. Run gh observer (watch CI) — only shown when [gh-observer](https://github.com/fini-net/gh-observer) is installed
 
 ### `gh amp list`
 
