@@ -505,7 +505,9 @@ review_pr() {
     current_user="$(gh api user --jq .login 2>/dev/null)" || current_user=""
 
     local observer_cmd=""
-    observer_cmd="$(observer_available 2>/dev/null)" || observer_cmd=""
+    if [[ -z "$REPO" ]]; then
+        observer_cmd="$(observer_available 2>/dev/null)" || observer_cmd=""
+    fi
 
     while true; do
         echo ""
