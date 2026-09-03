@@ -25,6 +25,22 @@ check_dependencies() {
     done
 }
 
+observer_available() {
+    # Print the observer invocation form on stdout and return 0 if available.
+    # Prefers the standalone `gh-observer` binary (fast `command -v` check) and
+    # falls back to the `gh observer` extension form. Returns 1 if neither is
+    # installed.
+    if command -v gh-observer &>/dev/null; then
+        printf 'gh-observer'
+        return 0
+    fi
+    if gh observer --help &>/dev/null; then
+        printf 'gh observer'
+        return 0
+    fi
+    return 1
+}
+
 REPO=""
 STATE="open"
 LIMIT=30
@@ -488,6 +504,11 @@ review_pr() {
     local current_user
     current_user="$(gh api user --jq .login 2>/dev/null)" || current_user=""
 
+    local observer_cmd=""
+    if [[ -z "$REPO" ]]; then
+        observer_cmd="$(observer_available 2>/dev/null)" || observer_cmd=""
+    fi
+
     while true; do
         echo ""
         echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
@@ -550,6 +571,9 @@ review_pr() {
             echo -e "  ${BOLD}5)${RESET}  Approve + Merge + Sync (full workflow)"
         fi
         echo -e "  ${BOLD}6)${RESET}  Open in browser"
+        if [[ -n "$observer_cmd" ]]; then
+            echo -e "  ${BOLD}7)${RESET}  Run gh observer (watch CI)"
+        fi
         echo -e "  ${BOLD}0)${RESET}  Back / Exit"
         echo ""
 
@@ -601,6 +625,14 @@ review_pr() {
                 ;;
             6)
                 gh pr view "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --web || true
+                ;;
+            7)
+                if [[ -n "$observer_cmd" ]]; then
+                    echo ""
+                    run_observer "$pr_number" "$observer_cmd" ${repo_args[@]+"${repo_args[@]}"}
+                else
+                    log_error "gh observer is not installed"
+                fi
                 ;;
             0|"")
                 return 0
@@ -672,6 +704,21 @@ pull_pr() {
     else
         log_error "Failed to checkout/pull ${base}"
         return 1
+    fi
+}
+
+run_observer() {
+    local pr_number="$1"
+    shift
+    local observer_cmd="$1"
+    shift
+    local repo_args=("$@")
+
+    log_info "Running ${observer_cmd} on PR #${pr_number}..."
+    if [[ "$observer_cmd" == "gh-observer" ]]; then
+        gh-observer "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || true
+    else
+        gh observer "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || true
     fi
 }
 
