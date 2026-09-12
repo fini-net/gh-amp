@@ -45,10 +45,27 @@ Key functions and their roles:
 
 ### Testing
 
-The test recipes run from `../gh-observer/` (requires that repo checked out as a sibling):
+- `just test` - Run the function test suite (`.just/lib/gh-amp-test.sh`), the
+  seed corpus for the fuzz targets; also shellchecks the test scripts
+- `just fuzz [time]` - Opt-in randomized fuzzing of the gh-amp helpers for a
+  time-boxed burst (default 30s), fixed seed for reproducibility
+
+The test suite sources the `gh-amp` script (its `main()` is guarded to run
+only when executed, not sourced) and asserts invariants on the functions
+that parse or render untrusted input: `sanitize()`, `valid_menu_choice()`,
+`resolve_owner_repo()`, `lookup_check_status()`, and the batch PR-number
+filter. The fuzz driver (`.just/lib/gh-amp-fuzz.sh`) generates adversarial
+input (escape soup, oversized numerics, malformed repo targets) against the
+same invariants. This is the bash analogue of gh-observer's Go fuzz targets.
+
+The live test recipes run from `../gh-observer/` (requires that repo checked
+out as a sibling):
 
 - `just test_list` - Run `gh amp list` against gh-observer repo
 - `just test_review` - Run `gh amp review` against gh-observer repo
+
+CI (`.github/workflows/tests.yml`) runs `just shellcheck-amp` and `just test`
+on push to main and on PRs.
 
 Install all development prerequisites with `.just/lib/install-prerequisites.sh`.
 
@@ -184,6 +201,7 @@ Workflows in `.github/workflows/`:
 - **dependency-review.yml** - Scans PR dependency changes for known vulnerabilities
 - **markdownlint.yml** - Enforces markdown standards using `markdownlint-cli2`
 - **scorecards.yml** - OSSF Scorecard supply-chain security analysis
+- **tests.yml** - Runs shellcheck and the function test suite (fuzz seed corpus)
 - **zizmor.yml** - GHA security analysis with zizmor
 
 ### Markdown linting

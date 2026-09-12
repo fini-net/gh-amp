@@ -36,6 +36,18 @@ run *ARGS:
 shellcheck-amp:
 	shellcheck -x -s bash gh-amp
 
+# run the function test suite (seed corpus for the fuzz targets)
+[group('Quality')]
+test:
+	shellcheck -x -s bash .just/lib/gh-amp-test.sh .just/lib/gh-amp-fuzz.sh
+	bash .just/lib/gh-amp-test.sh
+
+# fuzz the gh-amp helpers for a time-boxed burst (opt-in; `just test`
+# always runs the seed corpus, this explores deeper)
+[group('Quality')]
+fuzz time="30s":
+	bash .just/lib/gh-amp-fuzz.sh "{{ time }}"
+
 # dev cycle
 [group('Development')]
 build: shellcheck-amp uninstall && install
