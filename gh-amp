@@ -634,27 +634,29 @@ review_pr() {
 
         # Untrusted fields (title, author, refs, url) go through printf %s;
         # echo -e would re-interprete literal "\033" text in them as escapes
-        # (found by fuzzing; see .just/lib/gh-amp-test.sh).
-        printf '%s' "  ${BOLD}" >&2
-        printf '%s' "$title" >&2
-        printf '%s\n' "${RESET}" >&2
-        printf '%s' "  ${DIM}by ${CYAN}" >&2
-        printf '%s' "$author" >&2
-        printf '%s' "${RESET} ${DIM}| " >&2
-        printf '%s' "$branch" >&2
-        printf '%s' " → " >&2
-        printf '%s' "$base" >&2
-        printf '%s' " | state: " >&2
-        printf '%s' "$state" >&2
-        printf '%s\n' "${RESET}" >&2
-        printf '%s' "  ${DIM}review: " >&2
-        printf '%s' "$review" >&2
-        printf '%s' " | mergeable: " >&2
-        printf '%s' "$mergeable" >&2
-        printf '%s\n' "${RESET}${status_part}" >&2
-        printf '%s' "  ${DIM}" >&2
-        printf '%s' "$url" >&2
-        printf '%s\n' "${RESET}" >&2
+        # (found by fuzzing; see .just/lib/gh-amp-test.sh). Unlike
+        # select_pr (which reserves stdout as its return channel and so
+        # displays on stderr), review_pr's display is uniformly stdout.
+        printf '%s' "  ${BOLD}"
+        printf '%s' "$title"
+        printf '%s\n' "${RESET}"
+        printf '%s' "  ${DIM}by ${CYAN}"
+        printf '%s' "$author"
+        printf '%s' "${RESET} ${DIM}| "
+        printf '%s' "$branch"
+        printf '%s' " → "
+        printf '%s' "$base"
+        printf '%s' " | state: "
+        printf '%s' "$state"
+        printf '%s\n' "${RESET}"
+        printf '%s' "  ${DIM}review: "
+        printf '%s' "$review"
+        printf '%s' " | mergeable: "
+        printf '%s' "$mergeable"
+        printf '%s\n' "${RESET}${status_part}"
+        printf '%s' "  ${DIM}"
+        printf '%s' "$url"
+        printf '%s\n' "${RESET}"
         echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
 
         echo ""
@@ -669,9 +671,9 @@ review_pr() {
             echo -e "  ${BOLD}2)${RESET}  Approve PR"
         fi
         echo -e "  ${BOLD}3)${RESET}  Merge PR (${MERGE_STRATEGY})"
-        printf '%s' "  ${BOLD}4)${RESET}  Sync base branch (" >&2
-        printf '%s' "$base" >&2
-        printf '%s\n' ")" >&2
+        printf '%s' "  ${BOLD}4)${RESET}  Sync base branch ("
+        printf '%s' "$base"
+        printf '%s\n' ")"
         if $is_self_authored; then
             echo -e "  ${BOLD}5)${RESET}  Merge + Sync (full workflow)"
         else

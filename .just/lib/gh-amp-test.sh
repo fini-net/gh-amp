@@ -267,6 +267,44 @@ test_display_inert() {
     record "display renders untrusted titles inertly" "$ok"
 }
 
+test_log_streams() {
+    # Stream contract for the log helpers (second review pass of #41): each
+    # helper must write its icon AND message to one stream. A split (icon on
+    # stdout, message on stderr) leaks a bare colored icon into consumers
+    # capturing only stdout and loses the icon for stderr-only consumers.
+    # log_info/log_success: stdout. log_warn/log_error: stderr (matches the
+    # Unix convention and the original log_error behavior).
+    local ok=true
+    local out err
+
+    out="$(log_info "info message" 2>/dev/null)"
+    assert_match "log_info icon on stdout" 'ℹ' "$out" || ok=false
+    assert_match "log_info message on stdout" 'info message' "$out" || ok=false
+    out="$(log_success "success message" 2>/dev/null)"
+    assert_match "log_success icon on stdout" '✓' "$out" || ok=false
+    assert_match "log_success message on stdout" 'success message' "$out" || ok=false
+
+    out="$(log_warn "warn message" 2>/dev/null)"
+    if [[ -n "$out" ]]; then
+        echo "    log_warn leaked to stdout: $(printf '%q' "$out")"
+        ok=false
+    fi
+    err="$(log_warn "warn message" 2>&1 >/dev/null)"
+    assert_match "log_warn icon on stderr" '⚠' "$err" || ok=false
+    assert_match "log_warn message on stderr" 'warn message' "$err" || ok=false
+
+    out="$(log_error "error message" 2>/dev/null)"
+    if [[ -n "$out" ]]; then
+        echo "    log_error leaked to stdout: $(printf '%q' "$out")"
+        ok=false
+    fi
+    err="$(log_error "error message" 2>&1 >/dev/null)"
+    assert_match "log_error icon on stderr" '✗' "$err" || ok=false
+    assert_match "log_error message on stderr" 'error message' "$err" || ok=false
+
+    record "log helpers keep icon+message on one stream" "$ok"
+}
+
 test_sourceable() {
     # main() must not run when the script is sourced. Two checks:
     #
@@ -306,6 +344,7 @@ run_suite() {
     test_batch_pr_number_filter
     test_color_for_status
     test_display_inert
+    test_log_streams
     test_sourceable
 
     echo
