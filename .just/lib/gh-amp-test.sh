@@ -268,19 +268,34 @@ test_display_inert() {
 }
 
 test_sourceable() {
-    # main() must not run when the script is sourced. If it did, this very
-    # test suite would have tried to parse flags and dispatch a subcommand.
+    # main() must not run when the script is sourced. Two checks:
+    #
+    # 1. Functional probe (the real regression test): source the script
+    #    with arguments in a fresh bash. With the BASH_SOURCE guard intact,
+    #    main() stays dormant and the probe prints exactly "SOURCED-OK".
+    #    Without the guard, main() would run, dispatch on the args
+    #    (--version exits 0 after printing a banner), and the probe output
+    #    would differ -- so removing the guard from gh-amp fails here.
+    #
+    # 2. Symbol check: gh-amp's main must be defined after sourcing. This
+    #    only works because this suite's own entrypoint is named
+    #    run_suite() -- a suite-level main() would shadow the sourced one
+    #    and make declare -F main vacuously true.
     local ok=true
-    if declare -F main >/dev/null; then
-        record "main() defined after source" true
-    else
-        echo "    main() not defined after sourcing gh-amp"
+    local probe
+    probe="$(bash -c 'source "$1" --version; echo SOURCED-OK' probe "$AMP" 2>/dev/null)" || ok=false
+    if [[ "$probe" != "SOURCED-OK" ]]; then
+        echo "    sourcing gh-amp ran main() or failed; probe output: $(printf '%q' "$probe")"
         ok=false
-        record "main() defined after source" "$ok"
     fi
+    if ! declare -F main >/dev/null; then
+        echo "    gh-amp main() not defined after sourcing"
+        ok=false
+    fi
+    record "main() dormant when sourced" "$ok"
 }
 
-main() {
+run_suite() {
     echo -e "${T_BLUE}Running gh-amp function tests...${T_NORMAL}"
     echo
 
@@ -301,4 +316,4 @@ main() {
     fi
 }
 
-main "$@"
+run_suite "$@"

@@ -135,13 +135,20 @@ log_success() {
 }
 
 log_warn() {
-    printf '%s' "${YELLOW}⚠${RESET} "
-    printf '%s\n' "$*" >&2
+    # Whole line to stderr, icon included: splitting the icon (stdout) from
+    # the message (stderr) leaks a bare colored icon into consumers that
+    # capture or redirect only one stream (found by PR review of #41).
+    {
+        printf '%s' "${YELLOW}⚠${RESET} "
+        printf '%s\n' "$*"
+    } >&2
 }
 
 log_error() {
-    printf '%s' "${RED}✗${RESET} "
-    printf '%s\n' "$*" >&2
+    {
+        printf '%s' "${RED}✗${RESET} "
+        printf '%s\n' "$*"
+    } >&2
 }
 
 pr_list_args() {
