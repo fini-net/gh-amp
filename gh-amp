@@ -30,10 +30,11 @@ sanitize() {
     # contain tabs anyway, so nothing legitimate is lost. Interior LFs need
     # tr because sed is line-based: the LF between pattern-space lines is a
     # delimiter, never part of the pattern, so s/[[:cntrl:]]//g misses them.
+    # (A separate SGR-only rule would be a strict subset of the [A-Za-z]
+    # CSI rule below, so it is intentionally not kept.)
     printf '%s' "$1" \
         | sed -e $'s/\033\\][^\033\007]*\033\\\\//g' \
               -e $'s/\033\\][^\033\007]*\007//g' \
-              -e $'s/\033\\[[0-9;]*m//g' \
               -e $'s/\033\\[[0-9;]*[A-Za-z]//g' \
               -e 's/[[:cntrl:]]//g' \
         | tr -d '\n'
@@ -194,7 +195,11 @@ resolve_owner_repo() {
 
     # Require the exact OWNER/REPO shape (one slash, non-empty slug segments).
     # This rejects "a/b/c/d" (which used to yield owner="b", name="c/d") and
-    # "_"-style placeholders before they reach GraphQL.
+    # "_"-style placeholders before they reach GraphQL. Known ambiguity:
+    # "github.com/owner" (host form missing its repo segment) is
+    # indistinguishable from a valid plain owner/repo slug and parses as
+    # owner="github.com", name="owner" -- it just fails at the API layer,
+    # so it is not worth special-casing.
     if [[ ! "$repo_target" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
         return 0
     fi

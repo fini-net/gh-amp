@@ -57,16 +57,20 @@ assert_match() {
     return 0
 }
 
-# assert_no_control_bytes fails when $1 contains ESC (0x1b), CR (0x0d),
-# BS (0x08), or LF (0x0a) bytes. grep regexes handle embedded control
-# characters inconsistently across platforms, so inspect od -c output for
-# the octal escapes instead.
+# assert_no_control_bytes fails when $1 contains any control byte: the C0
+# range (0x00-0x1f) plus DEL (0x7f). od -c output pattern-matches specific
+# escape spellings and silently passes others (e.g. BEL, \f, \v), so this
+# inspects the decimal byte dump instead. od pads short rows with leading
+# spaces, so squeeze whitespace before awk: empty fields would otherwise
+# coerce to 0 in the numeric comparison and defeat the check. Literal
+# backslash text (bytes 5c 6e for "\n") is unaffected -- that is inert
+# display text, exactly what sanitize() is supposed to leave behind.
 assert_no_control_bytes() {
     local label="$1" s="$2"
-    local dump
-    dump="$(printf '%s' "$s" | od -An -c | tr -s ' ')"
-    if grep -qE '033|\\r|\\b|\\n' <<<"$dump"; then
-        echo "    ${T_RED}assertion failed:${T_NORMAL} $label: control bytes survive:"
+    local bad
+    bad="$(printf '%s' "$s" | od -An -tu1 | tr -s ' \t' '\n' | awk 'NF && ($1 < 32 || $1 == 127) {print $1; exit}')"
+    if [[ -n "$bad" ]]; then
+        echo "    ${T_RED}assertion failed:${T_NORMAL} $label: control byte(s) survive (first: $bad):"
         printf '%s' "$s" | od -An -c | sed 's/^/      /'
         return 1
     fi
