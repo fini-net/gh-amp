@@ -19,13 +19,15 @@ readonly REPO_ROOT
 
 DURATION="${1:-30s}"
 
-# shellcheck disable=SC1090  # dynamic path computed above
-source "$REPO_ROOT/gh-amp"
-
+# Validate arguments before sourcing anything else: fail fast on usage
+# errors rather than doing setup work first (third review pass of #41).
 if ! [[ "$DURATION" =~ ^([0-9]+)([smh])$ ]]; then
     echo "usage: $0 [duration, e.g. 30s|5m|1h]" >&2
     exit 2
 fi
+
+# shellcheck disable=SC1090  # dynamic path computed above
+source "$REPO_ROOT/gh-amp"
 
 dur_num="${BASH_REMATCH[1]}"
 dur_unit="${BASH_REMATCH[2]}"

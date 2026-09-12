@@ -19,7 +19,10 @@ sanitize() {
     # third parties, so anything that reprograms the terminal must go:
     #   - SGR color codes  : ESC [ ... m
     #   - OSC sequences   : ESC ] ... (BEL | ESC \)   (window title, clipboard, ...)
-    #   - other CSI codes  : ESC [ ... letter (cursor movement, erasing, ...)
+    #   - other CSI codes  : ESC [ ... letter (cursor movement, erasing, ...),
+    #                        including private/intermediate-parameter forms
+    #                        like ESC[?25h (cursor show/hide) and ESC[!p
+    #                        (DECSTR); parameter bytes may be [0-9;?!<=>]
     #   - bare ESC / CR / BS / LF and any other control byte
     # Found by fuzzing (see .just/lib/gh-amp-test.sh): the old sed
     # stripped SGR codes only, so OSC title injection ("\033]0;pwned\007")
@@ -35,7 +38,7 @@ sanitize() {
     printf '%s' "$1" \
         | sed -e $'s/\033\\][^\033\007]*\033\\\\//g' \
               -e $'s/\033\\][^\033\007]*\007//g' \
-              -e $'s/\033\\[[0-9;]*[A-Za-z]//g' \
+              -e $'s/\033\\[[0-9;?!<=>]*[A-Za-z]//g' \
               -e 's/[[:cntrl:]]//g' \
         | tr -d '\n'
 }

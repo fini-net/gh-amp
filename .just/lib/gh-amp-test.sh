@@ -110,9 +110,16 @@ test_sanitize() {
     assert_eq "sanitize osc-only" "" \
         "$(sanitize $'\033]0;title\007')" || ok=false
 
-    # Other CSI codes (cursor movement, erase) are stripped too.
+    # Other CSI codes (cursor movement, erase) are stripped too -- including
+    # private/intermediate-parameter forms like ESC[?25h and ESC[!p, which a
+    # digits-only parameter class used to leave behind as inert "[?25h" text
+    # (third review pass of #41).
     assert_eq "sanitize csi-erase" "cursor" \
         "$(sanitize $'\033[2J\033[1;5Hcursor')" || ok=false
+    assert_eq "sanitize csi-private" "cursor-on" \
+        "$(sanitize $'\033[?25hcursor-on')" || ok=false
+    assert_eq "sanitize csi-intermediate" "reset" \
+        "$(sanitize $'\033[!preset')" || ok=false
 
     # CR/BS rewrite attacks and interior LF (menu-line forgery).
     assert_eq "sanitize cr-bs" "xyz" \
