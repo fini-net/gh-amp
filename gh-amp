@@ -13,7 +13,34 @@ DIM=$'\033[2m'
 RESET=$'\033[0m'
 
 sanitize() {
-    printf '%s' "$1" | sed $'s/\033\\[[0-9;]*m//g'
+    # Strip terminal-control sequences and other display-hostile bytes from
+    # untrusted strings (PR titles, author names, ref names) before they are
+    # echoed into an interactive terminal. PR titles are arbitrary text from
+    # third parties, so anything that reprograms the terminal must go:
+    #   - SGR color codes  : ESC [ ... m
+    #   - OSC sequences   : ESC ] ... (BEL | ESC \)   (window title, clipboard, ...)
+    #   - other CSI codes  : ESC [ ... letter (cursor movement, erasing, ...),
+    #                        including private/intermediate-parameter forms
+    #                        like ESC[?25h (cursor show/hide) and ESC[!p
+    #                        (DECSTR); parameter bytes may be [0-9;?!<=>]
+    #   - bare ESC / CR / BS / LF and any other control byte
+    # Found by fuzzing (see .just/lib/gh-amp-test.sh): the old sed
+    # stripped SGR codes only, so OSC title injection ("\033]0;pwned\007")
+    # and "\r" rewrite attacks passed through intact. Order matters: the
+    # OSC/CSI expressions run before the final control-byte sweep so the ESC
+    # of a well-formed sequence is consumed with its sequence, not alone.
+    # [[:cntrl:]] also removes tabs; ref names and one-line titles cannot
+    # contain tabs anyway, so nothing legitimate is lost. Interior LFs need
+    # tr because sed is line-based: the LF between pattern-space lines is a
+    # delimiter, never part of the pattern, so s/[[:cntrl:]]//g misses them.
+    # (A separate SGR-only rule would be a strict subset of the [A-Za-z]
+    # CSI rule below, so it is intentionally not kept.)
+    printf '%s' "$1" \
+        | sed -e $'s/\033\\][^\033\007]*\033\\\\//g' \
+              -e $'s/\033\\][^\033\007]*\007//g' \
+              -e $'s/\033\\[[0-9;?!<=>]*[A-Za-z]//g' \
+              -e 's/[[:cntrl:]]//g' \
+        | tr -d '\n'
 }
 
 check_dependencies() {
@@ -102,19 +129,30 @@ version() {
 }
 
 log_info() {
-    echo -e "${BLUE}ℹ${RESET} $*"
+    printf '%s' "${BLUE}ℹ${RESET} "
+    printf '%s\n' "$*"
 }
 
 log_success() {
-    echo -e "${GREEN}✓${RESET} $*"
+    printf '%s' "${GREEN}✓${RESET} "
+    printf '%s\n' "$*"
 }
 
 log_warn() {
-    echo -e "${YELLOW}⚠${RESET} $*"
+    # Whole line to stderr, icon included: splitting the icon (stdout) from
+    # the message (stderr) leaks a bare colored icon into consumers that
+    # capture or redirect only one stream (found by PR review of #41).
+    {
+        printf '%s' "${YELLOW}⚠${RESET} "
+        printf '%s\n' "$*"
+    } >&2
 }
 
 log_error() {
-    echo -e "${RED}✗${RESET} $*" >&2
+    {
+        printf '%s' "${RED}✗${RESET} "
+        printf '%s\n' "$*"
+    } >&2
 }
 
 pr_list_args() {
@@ -142,6 +180,9 @@ resolve_owner_repo() {
     # Resolve OWNER/REPO for GraphQL from $REPO (or the current repo when unset).
     # Prints "owner name" on stdout, or nothing on failure (graceful degradation).
     # Handles the documented [HOST/]OWNER/REPO form for --repo.
+    # Owner/repo must be GitHub slugs ([a-zA-Z0-9_.-]+); anything else (spaces,
+    # extra path segments like "a/b/c/d") is rejected rather than spliced into
+    # a GraphQL query (found by fuzzing; see .just/lib/gh-amp-test.sh).
     local repo_target="$REPO"
     if [[ -z "$repo_target" ]]; then
         repo_target="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null)" || true
@@ -155,12 +196,20 @@ resolve_owner_repo() {
         repo_target="${repo_target#*/}"
     fi
 
+    # Require the exact OWNER/REPO shape (one slash, non-empty slug segments).
+    # This rejects "a/b/c/d" (which used to yield owner="b", name="c/d") and
+    # "_"-style placeholders before they reach GraphQL. Known ambiguity:
+    # "github.com/owner" (host form missing its repo segment) is
+    # indistinguishable from a valid plain owner/repo slug and parses as
+    # owner="github.com", name="owner" -- it just fails at the API layer,
+    # so it is not worth special-casing.
+    if [[ ! "$repo_target" =~ ^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$ ]]; then
+        return 0
+    fi
+
     local owner name
     owner="${repo_target%%/*}"
     name="${repo_target#*/}"
-    if [[ -z "$owner" || -z "$name" || "$owner" == "$repo_target" ]]; then
-        return 0
-    fi
     printf '%s %s' "$owner" "$name"
 }
 
@@ -259,12 +308,16 @@ batch_checks_status() {
     done
     (( ${#nums[@]} == 0 )) && return 0
 
-    # Filter to numeric PR numbers so the splice into the GraphQL query string
-    # below stays safe. nums come from `gh pr list --json number` (trusted),
-    # but make that assumption explicit rather than implicit.
+    # Filter to PR numbers that are safe to splice into the GraphQL query
+    # string below: decimal, no leading zeros, at most 10 digits (GitHub PR
+    # numbers are far below 2^31, so this cannot reject a real one). nums
+    # come from `gh pr list --json number` (trusted), but make that
+    # assumption explicit rather than implicit -- "007" and 20-digit
+    # literals used to pass a bare ^[0-9]+$ check (found by fuzzing; see
+    # .just/lib/gh-amp-test.sh).
     local filtered=()
     for n in "${nums[@]}"; do
-        [[ "$n" =~ ^[0-9]+$ ]] && filtered+=("$n")
+        [[ "$n" =~ ^[1-9][0-9]{0,9}$ ]] && filtered+=("$n")
     done
     nums=("${filtered[@]}")
     (( ${#nums[@]} == 0 )) && return 0
@@ -348,9 +401,33 @@ lookup_check_status() {
     # Print the checks-status for a PR number looked up in a checks_map
     # ("<num> <status>" lines as produced by batch_checks_status).
     # Empty output when the number is absent or status is empty.
+    # The lookup key must be a plain decimal number: awk -v mangles
+    # backslash sequences, and a key containing awk metacharacters could
+    # otherwise match the wrong line (found by fuzzing; see
+    # .just/lib/gh-amp-test.sh).
     local num="$1"
     local checks_map="$2"
+    [[ "$num" =~ ^[1-9][0-9]{0,9}$ ]] || return 0
     printf '%s\n' "$checks_map" | awk -v n="$num" '$1==n{$1="";sub(/^ /,"");print;exit}'
+}
+
+valid_menu_choice() {
+    # Validate an interactive menu selection ($1) against the number of menu
+    # items ($2). Returns 0 only for a decimal integer in [1, count).
+    # Found by fuzzing (see .just/lib/gh-amp-test.sh): plain `[[ $choice -lt
+    # 1 ]]` arithmetic has two laxity holes --
+    #   - int64 overflow: "18446744073709551619" (2^64+3) wraps to 3, so a
+    #     huge input could silently select a PR the user never chose
+    #   - leading zeros: "[[ 08 -lt 1 ]]" is an octal parse error, which under
+    #     `set -e` semantics aborts the script instead of rejecting input
+    # The fix validates the textual shape first (no leading zeros, bounded
+    # digit count so no 64-bit wrap is possible) and only then compares.
+    local choice="$1"
+    local count="$2"
+    [[ "$choice" =~ ^[0-9]+$ ]] || return 1
+    (( ${#choice} > 15 )) && return 1
+    [[ "$choice" == 0* ]] && return 1
+    (( 10#$choice >= 1 && 10#$choice < count ))
 }
 
 cmd_list() {
@@ -469,8 +546,25 @@ select_pr() {
             status_part=" (checks: ${status_color}${status}${RESET})"
         fi
 
-        echo -e "  ${BOLD}${i})${RESET}  ${GREEN}#${num}${RESET}  ${title}" >&2
-        echo -e "      ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | review: ${review_color}${review}${RESET} | merge: ${merge_color}${mergeable}${RESET}${status_part}" >&2
+        # Untrusted fields (title, author, refs) must go through printf %s
+        # or they'd be re-interpreted for escapes by echo -e: a PR title
+        # containing the literal text "\033[31m" would render as a real
+        # escape sequence (found by fuzzing; see .just/lib/gh-amp-test.sh).
+        printf '%s' "  ${BOLD}${i})${RESET}  ${GREEN}#${num}" >&2
+        printf '%s' "${RESET}  " >&2
+        printf '%s\n' "$title" >&2
+        printf '%s' "      ${DIM}by ${CYAN}" >&2
+        printf '%s' "$author" >&2
+        printf '%s' "${RESET} ${DIM}| " >&2
+        printf '%s' "$branch" >&2
+        printf '%s' " → " >&2
+        printf '%s' "$base" >&2
+        printf '%s' " | review: ${review_color}" >&2
+        printf '%s' "$review" >&2
+        printf '%s' "${RESET} | merge: ${merge_color}" >&2
+        printf '%s' "$mergeable" >&2
+        printf '%s' "${RESET}${status_part}" >&2
+        printf '\n' >&2
 
         numbers+=("$num")
         ((i++)) || true
@@ -480,13 +574,13 @@ select_pr() {
     echo -e "  ${BOLD}0)${RESET}  Exit" >&2
     echo "" >&2
 
-    read -rp "$(echo -e "${BOLD}Select PR [1-$((i-1))]: ${RESET}")" choice
+    read -rp "$(printf '%s' "${BOLD}Select PR [1-$((i-1))]: ${RESET}")" choice
 
     if [[ "$choice" == "0" || -z "$choice" ]]; then
         return 1
     fi
 
-    if ! [[ "$choice" =~ ^[0-9]+$ ]] || [[ "$choice" -lt 1 ]] || [[ "$choice" -ge "$i" ]]; then
+    if ! valid_menu_choice "$choice" "$i"; then
         log_error "Invalid selection: $choice" >&2
         return 1
     fi
@@ -546,10 +640,31 @@ review_pr() {
             is_self_authored=true
         fi
 
-        echo -e "  ${BOLD}${title}${RESET}"
-        echo -e "  ${DIM}by ${CYAN}${author}${RESET} ${DIM}| ${branch} → ${base} | state: ${state}${RESET}"
-        echo -e "  ${DIM}review: ${review} | mergeable: ${mergeable}${RESET}${status_part}"
-        echo -e "  ${DIM}${url}${RESET}"
+        # Untrusted fields (title, author, refs, url) go through printf %s;
+        # echo -e would re-interprete literal "\033" text in them as escapes
+        # (found by fuzzing; see .just/lib/gh-amp-test.sh). Unlike
+        # select_pr (which reserves stdout as its return channel and so
+        # displays on stderr), review_pr's display is uniformly stdout.
+        printf '%s' "  ${BOLD}"
+        printf '%s' "$title"
+        printf '%s\n' "${RESET}"
+        printf '%s' "  ${DIM}by ${CYAN}"
+        printf '%s' "$author"
+        printf '%s' "${RESET} ${DIM}| "
+        printf '%s' "$branch"
+        printf '%s' " → "
+        printf '%s' "$base"
+        printf '%s' " | state: "
+        printf '%s' "$state"
+        printf '%s\n' "${RESET}"
+        printf '%s' "  ${DIM}review: "
+        printf '%s' "$review"
+        printf '%s' " | mergeable: "
+        printf '%s' "$mergeable"
+        printf '%s\n' "${RESET}${status_part}"
+        printf '%s' "  ${DIM}"
+        printf '%s' "$url"
+        printf '%s\n' "${RESET}"
         echo -e "${BOLD}${CYAN}══════════════════════════════════════════════════════${RESET}"
 
         echo ""
@@ -564,7 +679,9 @@ review_pr() {
             echo -e "  ${BOLD}2)${RESET}  Approve PR"
         fi
         echo -e "  ${BOLD}3)${RESET}  Merge PR (${MERGE_STRATEGY})"
-        echo -e "  ${BOLD}4)${RESET}  Sync base branch (${base})"
+        printf '%s' "  ${BOLD}4)${RESET}  Sync base branch ("
+        printf '%s' "$base"
+        printf '%s\n' ")"
         if $is_self_authored; then
             echo -e "  ${BOLD}5)${RESET}  Merge + Sync (full workflow)"
         else
@@ -577,7 +694,7 @@ review_pr() {
         echo -e "  ${BOLD}0)${RESET}  Back / Exit"
         echo ""
 
-        read -rp "$(echo -e "${BOLD}Action: ${RESET}")" action
+        read -rp "$(printf '%s' "${BOLD}Action: ${RESET}")" action
 
         case "$action" in
             1)
@@ -821,4 +938,8 @@ main() {
     esac
 }
 
-main "$@"
+# Run as the script; skip when sourced (tests source this file to exercise
+# the functions above without invoking gh/jq or the interactive flows).
+if [[ "${BASH_SOURCE[0]:-}" == "${0}" ]]; then
+    main "$@"
+fi
