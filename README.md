@@ -1,5 +1,6 @@
 # gh-amp
 
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/fini-net/gh-amp/badge)](https://scorecard.dev/viewer/?uri=github.com/fini-net/gh-amp)
 ![GitHub Issues](https://img.shields.io/github/issues/fini-net/gh-amp)
 ![GitHub Pull Requests](https://img.shields.io/github/issues-pr/fini-net/gh-amp)
 ![GitHub License](https://img.shields.io/github/license/fini-net/gh-amp)
