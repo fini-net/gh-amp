@@ -89,6 +89,14 @@ The review command shows the PR diff, then presents a menu with options to:
 5. Approve + Merge + Sync (full workflow)
 6. Open in browser
 7. Run gh observer (watch CI) — only shown when [gh-observer](https://github.com/fini-net/gh-observer) is installed
+8. Mark ready for review — only shown for draft PRs
+
+Draft PRs are marked with a dim `(draft)` suffix after the title in
+`gh amp list` and the review picker, and shown as `state: OPEN (draft)`
+in the review header. Because draft PRs cannot be merged, `gh amp review`
+blocks the merge and full-workflow actions on a draft PR until it is marked
+ready for review; approving a draft is allowed (with a warning) so you can
+leave early review feedback.
 
 ### `gh amp list`
 

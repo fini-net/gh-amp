@@ -30,8 +30,9 @@ Key functions and their roles:
 - `sanitize()` -- Strips ANSI color codes from strings; used before displaying jq-extracted values in the menu to prevent escape code leakage
 - `pr_list_args()` -- Builds a shared `gh pr list` args array from globals (used by both `cmd_list` and `select_pr`)
 - `select_pr()` -- Interactive numbered menu; prints PR number to stdout for capture by caller
-- `review_pr()` -- Infinite loop presenting a numbered action menu for a single PR; shows full PR diff before the menu on each iteration
+- `review_pr()` -- Infinite loop presenting a numbered action menu for a single PR; shows full PR diff before the menu on each iteration; blocks merge actions on draft PRs and warns before approving them
 - `approve_pr()` / `merge_pr()` / `pull_pr()` -- Individual action steps called by the review loop. `pull_pr()` checks out and pulls the base branch to sync it locally.
+- `draft_marker()` / `mark_ready()` -- Draft PR support: `draft_marker()` renders the dim "(draft)" title suffix from the jq `isDraft` value (only exact `true` counts); `mark_ready()` flips a draft PR to ready via `gh pr ready` (review menu option 8, shown for drafts only)
 
 ## Development Commands
 

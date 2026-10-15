@@ -285,7 +285,8 @@ checks_status() {
         UNKNOWN) printf 'pending' ;;
         BLOCKED|UNSTABLE|DIRTY) refine_checks_status "$pr_number" ;;
         DRAFT)
-            # Draft PRs have no required-check signal worth surfacing.
+            # Draft PRs have no required-check signal worth surfacing; draft
+            # state itself is displayed via the isDraft marker (issue #49).
             return 0
             ;;
         *)
@@ -360,7 +361,8 @@ batch_checks_status() {
                 status="$(refine_checks_status "$n")"
                 ;;
             DRAFT)
-                # Draft PRs have no required-check signal worth surfacing.
+                # Draft PRs have no required-check signal worth surfacing;
+                # draft state itself is displayed via the isDraft marker (issue #49).
                 status=""
                 ;;
             *)
@@ -382,6 +384,20 @@ color_for_status() {
     esac
 }
 
+draft_marker() {
+    # Print the dim "(draft)" title suffix for a PR's raw jq isDraft value
+    # ("true"/"false"/"null"), or nothing when the PR is not a draft.
+    # Only the exact string "true" counts (issue #49): different casings,
+    # numerics, or junk from malformed data must never render the marker
+    # -- and must never trip the review-flow guards that share this exact
+    # textual predicate -- so equality is textual, not truthy. Output is
+    # empty for non-drafts, so callers can splice the capture unconditionally.
+    if [[ "$1" == true ]]; then
+        printf ' %s(draft)%s' "$DIM" "$RESET"
+    fi
+    return 0
+}
+
 fetch_prs_json() {
     # Print the `gh pr list` JSON for the current filter globals, or nothing.
     # Shared by cmd_list and select_pr to avoid drift in the args construction.
@@ -392,7 +408,7 @@ fetch_prs_json() {
         gh_args+=("$arg")
     done <<< "$filter_args"
 
-    gh_args+=("--json" "number,title,author,headRefName,baseRefName,reviewDecision,mergeable")
+    gh_args+=("--json" "number,title,author,headRefName,baseRefName,reviewDecision,mergeable,isDraft")
 
     gh "${gh_args[@]}"
 }
@@ -445,7 +461,7 @@ cmd_list() {
     echo -e "${BOLD}  PR   Title                                                    Author         Branch                Base            Review        Mergeable${RESET}"
 
     while IFS= read -r line; do
-        local num title author_login branch base review mergeable
+        local num title author_login branch base review mergeable draft
         num="$(echo "$line" | jq -r '.number')"
         title="$(sanitize "$(echo "$line" | jq -r '.title')")"
         author_login="$(sanitize "$(echo "$line" | jq -r '.author.login')")"
@@ -453,6 +469,10 @@ cmd_list() {
         base="$(sanitize "$(echo "$line" | jq -r '.baseRefName')")"
         review="$(echo "$line" | jq -r '.reviewDecision')"
         mergeable="$(echo "$line" | jq -r '.mergeable')"
+        draft="$(echo "$line" | jq -r '.isDraft')"
+        # Draft marker after the title: spliced post-sanitize so the
+        # (trusted) marker codes are never stripped (issue #49).
+        title="${title}$(draft_marker "$draft")"
 
         local status
         status="$(lookup_check_status "$num" "$checks_map")" || status=""
@@ -515,7 +535,7 @@ select_pr() {
     local i=1
 
     while IFS= read -r line; do
-        local num title author branch base review mergeable
+        local num title author branch base review mergeable draft
         num="$(echo "$line" | jq -r '.number')"
         title="$(sanitize "$(echo "$line" | jq -r '.title')")"
         author="$(sanitize "$(echo "$line" | jq -r '.author.login')")"
@@ -523,6 +543,10 @@ select_pr() {
         base="$(sanitize "$(echo "$line" | jq -r '.baseRefName')")"
         review="$(echo "$line" | jq -r '.reviewDecision')"
         mergeable="$(echo "$line" | jq -r '.mergeable')"
+        draft="$(echo "$line" | jq -r '.isDraft')"
+        # Draft marker after the title: spliced post-sanitize so the
+        # (trusted) marker codes are never stripped (issue #49).
+        title="${title}$(draft_marker "$draft")"
 
         local status
         status="$(lookup_check_status "$num" "$checks_map")" || status=""
@@ -609,12 +633,12 @@ review_pr() {
         echo -e "${BOLD}  PR #${pr_number}${RESET}"
 
         local pr_info
-        pr_info="$(gh pr view "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --json title,author,headRefName,baseRefName,state,reviewDecision,mergeable,url 2>/dev/null)" || {
+        pr_info="$(gh pr view "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --json title,author,headRefName,baseRefName,state,reviewDecision,mergeable,isDraft,url 2>/dev/null)" || {
             log_error "Could not fetch PR #$pr_number"
             return 1
         }
 
-        local title author branch base state review mergeable url
+        local title author branch base state review mergeable url draft
         title="$(sanitize "$(echo "$pr_info" | jq -r '.title')")"
         author="$(sanitize "$(echo "$pr_info" | jq -r '.author.login')")"
         branch="$(sanitize "$(echo "$pr_info" | jq -r '.headRefName')")"
@@ -622,6 +646,7 @@ review_pr() {
         state="$(echo "$pr_info" | jq -r '.state')"
         review="$(echo "$pr_info" | jq -r '.reviewDecision')"
         mergeable="$(echo "$pr_info" | jq -r '.mergeable')"
+        draft="$(echo "$pr_info" | jq -r '.isDraft')"
         url="$(echo "$pr_info" | jq -r '.url')"
 
         local status
@@ -656,6 +681,11 @@ review_pr() {
         printf '%s' "$base"
         printf '%s' " | state: "
         printf '%s' "$state"
+        # Draft state next to the state so merge guards are never a
+        # surprise (issue #49). Same exact-true predicate as draft_marker.
+        if [[ "$draft" == true ]]; then
+            printf '%s' " ${YELLOW}(draft)${RESET}"
+        fi
         printf '%s\n' "${RESET}"
         printf '%s' "  ${DIM}review: "
         printf '%s' "$review"
@@ -691,6 +721,11 @@ review_pr() {
         if [[ -n "$observer_cmd" ]]; then
             echo -e "  ${BOLD}7)${RESET}  Run gh observer (watch CI)"
         fi
+        # Draft-only action, numbered after the observer option so existing
+        # menu numbers never shift (issue #49).
+        if [[ "$draft" == true ]]; then
+            echo -e "  ${BOLD}8)${RESET}  Mark ready for review"
+        fi
         echo -e "  ${BOLD}0)${RESET}  Back / Exit"
         echo ""
 
@@ -707,12 +742,24 @@ review_pr() {
                 if $is_self_authored; then
                     log_info "Cannot approve your own PR (#${pr_number}) -- GitHub forbids self-approval"
                 else
+                    # Approving a draft is legal (early feedback), but the
+                    # merge guards below mean it cannot merge until ready,
+                    # so say so before the approval lands (issue #49).
+                    if [[ "$draft" == true ]]; then
+                        log_warn "PR #${pr_number} is in draft mode -- approval is allowed, but it cannot merge until it is ready for review"
+                    fi
                     approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
                 fi
                 ;;
             3)
                 echo ""
-                merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                if [[ "$draft" == true ]]; then
+                    # Fail fast here rather than letting gh pr merge fail
+                    # mid-workflow later (issue #49).
+                    log_error "PR #${pr_number} is in draft mode -- mark it ready for review first (option 8)"
+                else
+                    merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                fi
                 ;;
             4)
                 echo ""
@@ -720,24 +767,30 @@ review_pr() {
                 ;;
             5)
                 echo ""
-                local success=true
-                if $is_self_authored; then
-                    log_info "PR #${pr_number} authored by you -- skipping approval"
+                if [[ "$draft" == true ]]; then
+                    # A draft cannot merge, so the whole approve/merge/sync
+                    # chain would approve and then die at merge (issue #49).
+                    log_warn "PR #${pr_number} is in draft mode -- skipping approve/merge; mark it ready for review first (option 8)"
                 else
-                    approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
-                fi
-                if $success; then
-                    merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
-                fi
-                if $success; then
-                    pull_pr "$pr_number" "$branch" "$base" ${repo_args[@]+"${repo_args[@]}"}
-                fi
-                if $success; then
-                    echo ""
-                    log_success "Full workflow completed for PR #${pr_number}!"
-                    return 0
-                else
-                    log_warn "Workflow did not complete fully"
+                    local success=true
+                    if $is_self_authored; then
+                        log_info "PR #${pr_number} authored by you -- skipping approval"
+                    else
+                        approve_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                    fi
+                    if $success; then
+                        merge_pr "$pr_number" ${repo_args[@]+"${repo_args[@]}"} || success=false
+                    fi
+                    if $success; then
+                        pull_pr "$pr_number" "$branch" "$base" ${repo_args[@]+"${repo_args[@]}"}
+                    fi
+                    if $success; then
+                        echo ""
+                        log_success "Full workflow completed for PR #${pr_number}!"
+                        return 0
+                    else
+                        log_warn "Workflow did not complete fully"
+                    fi
                 fi
                 ;;
             6)
@@ -749,6 +802,17 @@ review_pr() {
                     run_observer "$pr_number" "$observer_cmd" ${repo_args[@]+"${repo_args[@]}"}
                 else
                     log_error "gh observer is not installed"
+                fi
+                ;;
+            8)
+                # Draft-only option (only listed for drafts); the loop
+                # re-fetches pr_info on the next pass, so the header and
+                # menu drop the draft state once this succeeds (issue #49).
+                if [[ "$draft" == true ]]; then
+                    echo ""
+                    mark_ready "$pr_number" ${repo_args[@]+"${repo_args[@]}"}
+                else
+                    log_error "PR #${pr_number} is not in draft mode"
                 fi
                 ;;
             0|"")
@@ -796,6 +860,23 @@ merge_pr() {
         log_success "PR #${pr_number} merged"
     else
         log_error "Failed to merge PR #${pr_number}"
+        return 1
+    fi
+}
+
+mark_ready() {
+    # Mark a draft PR ready for review (issue #49). gh pr ready requires
+    # being the PR author or having push access to the repo; gh's own error
+    # is surfaced for anyone else.
+    local pr_number="$1"
+    shift
+    local repo_args=("$@")
+
+    log_info "Marking PR #${pr_number} ready for review..."
+    if gh pr ready "$pr_number" ${repo_args[@]+"${repo_args[@]}"}; then
+        log_success "PR #${pr_number} is ready for review"
+    else
+        log_error "Failed to mark PR #${pr_number} ready for review"
         return 1
     fi
 }

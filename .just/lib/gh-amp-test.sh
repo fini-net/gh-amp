@@ -11,6 +11,7 @@
 #   - resolve_owner_repo()     -- OWNER/REPO slug parsing for GraphQL
 #   - lookup_check_status()    -- checks-map key lookup
 #   - color_for_status()       -- status -> color mapping
+#   - draft_marker()           -- isDraft -> "(draft)" title suffix
 #   - the batch PR-number filter (via the regexp it uses)
 #
 # Each section runs a seed corpus of known-good, known-bad, and adversarial
@@ -256,6 +257,33 @@ test_color_for_status() {
     record "color_for_status()" "$ok"
 }
 
+test_draft_marker() {
+    # The isDraft signal drives the "(draft)" title suffix and the
+    # review-flow draft guards, so only jq's exact boolean "true" may
+    # render the marker. Everything else -- other casings, numerics,
+    # truthy spellings, junk, null (jq's rendering of a missing field),
+    # and escape soup -- must render as empty output so malformed data
+    # can never forge a draft marker on a non-draft PR (issue #49).
+    local ok=true
+
+    local marker
+    marker="$(draft_marker true)"
+    assert_match "true renders marker" '\(draft\)' "$marker" || ok=false
+    assert_match "true renders dim color" $'\033\[2m' "$marker" || ok=false
+    assert_match "true resets color" $'\033\[0m' "$marker" || ok=false
+
+    local v out
+    for v in false null True TRUE 1 0 yes "" " " "true " " true" "truefalse" $'\033[31mtrue' "true\033[31m"; do
+        out="$(draft_marker "$v")"
+        if [[ -n "$out" ]]; then
+            echo "    [$v] rendered a marker: $(printf '%q' "$out")"
+            ok=false
+        fi
+    done
+
+    record "draft_marker()" "$ok"
+}
+
 test_display_inert() {
     # The display fix: untrusted titles must render as inert text. Reproduce
     # the select_pr/review_pr printf pattern and assert no escape bytes are
@@ -354,6 +382,7 @@ run_suite() {
     test_lookup_check_status
     test_batch_pr_number_filter
     test_color_for_status
+    test_draft_marker
     test_display_inert
     test_log_streams
     test_sourceable
