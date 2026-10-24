@@ -9,6 +9,7 @@ YELLOW=$'\033[33m'
 RED=$'\033[31m'
 BLUE=$'\033[34m'
 CYAN=$'\033[36m'
+GREY=$'\033[90m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
 
@@ -398,6 +399,23 @@ draft_marker() {
     return 0
 }
 
+number_color() {
+    # Print the color for a PR's number column given its raw jq isDraft
+    # value ("true"/"false"/"null"): grey for drafts, green otherwise,
+    # so drafts stand out in `gh amp list` and the review picker the
+    # same way they do in `gh pr list` (issue #52). Gh's "gray" is
+    # bright black, SGR 90 (ansi.ColorFunc("black+h")), hence GREY above.
+    # Only the exact string "true" counts, sharing draft_marker()'s
+    # textual predicate (issue #49): anything else -- casings, numerics,
+    # junk, null -- must stay green so malformed data can never grey
+    # out the number of a non-draft PR.
+    if [[ "$1" == true ]]; then
+        printf '%s' "$GREY"
+    else
+        printf '%s' "$GREEN"
+    fi
+}
+
 fetch_prs_json() {
     # Print the `gh pr list` JSON for the current filter globals, or nothing.
     # Shared by cmd_list and select_pr to avoid drift in the args construction.
@@ -484,7 +502,13 @@ cmd_list() {
             mergeable_display="${mergeable} (checks: ${status_color}${status}${RESET})"
         fi
 
-        printf "  ${GREEN}%-6s${RESET} %-55s ${CYAN}%-14s${RESET} %-21s ${YELLOW}%-15s${RESET} %-14s %s\n" \
+        # Draft PR numbers render in grey, green for everything else,
+        # mirroring `gh pr list` (issue #52). Trusted constant spliced
+        # into the format string, like the draft_marker title suffix.
+        local num_color
+        num_color="$(number_color "$draft")"
+
+        printf "  ${num_color}%-6s${RESET} %-55s ${CYAN}%-14s${RESET} %-21s ${YELLOW}%-15s${RESET} %-14s %s\n" \
             "#${num}" "$title" "$author_login" "$branch" "$base" "$review" "$mergeable_display"
     done <<< "$(echo "$prs" | jq -c '.[]')"
 }
@@ -570,11 +594,17 @@ select_pr() {
             status_part=" (checks: ${status_color}${status}${RESET})"
         fi
 
+        # Draft PR numbers render in grey, green for everything else,
+        # mirroring `gh pr list` (issue #52). Trusted constant, so it
+        # rides in the fixed printf prefix, not through %s.
+        local num_color
+        num_color="$(number_color "$draft")"
+
         # Untrusted fields (title, author, refs) must go through printf %s
         # or they'd be re-interpreted for escapes by echo -e: a PR title
         # containing the literal text "\033[31m" would render as a real
         # escape sequence (found by fuzzing; see .just/lib/gh-amp-test.sh).
-        printf '%s' "  ${BOLD}${i})${RESET}  ${GREEN}#${num}" >&2
+        printf '%s' "  ${BOLD}${i})${RESET}  ${num_color}#${num}" >&2
         printf '%s' "${RESET}  " >&2
         printf '%s\n' "$title" >&2
         printf '%s' "      ${DIM}by ${CYAN}" >&2

@@ -12,6 +12,7 @@
 #   - lookup_check_status()    -- checks-map key lookup
 #   - color_for_status()       -- status -> color mapping
 #   - draft_marker()           -- isDraft -> "(draft)" title suffix
+#   - number_color()           -- isDraft -> grey/green number color
 #   - the batch PR-number filter (via the regexp it uses)
 #
 # Each section runs a seed corpus of known-good, known-bad, and adversarial
@@ -284,6 +285,28 @@ test_draft_marker() {
     record "draft_marker()" "$ok"
 }
 
+test_number_color() {
+    # Draft PR numbers render in grey (bright black, SGR 90 -- the same
+    # code `gh pr list` uses); everything else stays green (issue #52).
+    # Only jq's exact boolean "true" may pick grey: other casings,
+    # numerics, truthy spellings, junk, null (jq's rendering of a
+    # missing field), and escape soup must all stay green so malformed
+    # data can never grey out a non-draft PR's number. The corpus is the
+    # same one that must not render a draft marker (test_draft_marker):
+    # the two helpers share the exact-true predicate.
+    local ok=true
+
+    assert_match "true->grey" $'\033\[90m' "$(number_color true)" || ok=false
+
+    local v out
+    for v in false null True TRUE 1 0 yes "" " " "true " " true" "truefalse" $'\033[31mtrue' "true\033[31m"; do
+        out="$(number_color "$v")"
+        assert_match "[$v]->green" $'\033\[32m' "$out" || ok=false
+    done
+
+    record "number_color()" "$ok"
+}
+
 test_display_inert() {
     # The display fix: untrusted titles must render as inert text. Reproduce
     # the select_pr/review_pr printf pattern and assert no escape bytes are
@@ -383,6 +406,7 @@ run_suite() {
     test_batch_pr_number_filter
     test_color_for_status
     test_draft_marker
+    test_number_color
     test_display_inert
     test_log_streams
     test_sourceable
