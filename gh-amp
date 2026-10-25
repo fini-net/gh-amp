@@ -214,24 +214,72 @@ resolve_owner_repo() {
     printf '%s %s' "$owner" "$name"
 }
 
+classify_check_buckets() {
+    # Read a `gh pr checks --json bucket` array on stdin and print
+    # failing | pending | passing -- or nothing at all when the input
+    # carries no signal (empty input, empty array, non-array JSON,
+    # malformed JSON). No output is the caller's cue to degrade, so this
+    # function can never be the source of the misleading green light
+    # issue #21 guards against.
+    #   - fail or cancel anywhere -> failing (a cancelled run is the same
+    #     red X gh's own exit-code logic counts as failed)
+    #   - else pending anywhere   -> pending (something still running)
+    #   - else (pass/skipping)    -> passing
+    # Pure stdin->stdout function so the test suite can exercise the
+    # bucket semantics without gh (issue #51). jq parse errors exit
+    # nonzero with empty stdout and `empty` prints nothing for the
+    # no-signal shapes, so one `|| true` covers both.
+    jq -r '
+        if (type != "array") or (length == 0) then
+            empty
+        elif any(.[]; .bucket == "fail" or .bucket == "cancel") then
+            "failing"
+        elif any(.[]; .bucket == "pending") then
+            "pending"
+        else
+            "passing"
+        end
+    ' 2>/dev/null || true
+}
+
 refine_checks_status() {
-    # Refine a BLOCKED/UNSTABLE/DIRTY mergeStateStatus using required checks.
-    # Reads required-check buckets from `gh pr checks --required` and prints
-    # one of: failing | pending | passing
-    # Degradation: on any error, prints "pending". This path is only reached
-    # when mergeStateStatus is BLOCKED/UNSTABLE/DIRTY (GitHub already signaled
-    # something blocks merge), so a fetch failure must not be reported as
-    # "passing" -- that would be the misleading green light issue #21 fixed.
-    # Note: `gh pr checks --required --json bucket` requires a recent gh CLI;
-    # an older client hits this same fallback and will see "pending".
+    # Refine a BLOCKED/UNSTABLE/DIRTY mergeStateStatus into
+    # failing | pending | passing via a two-lens lookup (issue #51):
+    #
+    #   lens 1 (required): `gh pr checks --required --json bucket` -- the
+    #       merge-blocking signal when branch protection exists. Primary
+    #       on purpose: on protected repos the required checks gate the
+    #       merge, and that long-standing behavior is unchanged.
+    #   lens 2 (rollup): `gh pr checks --json bucket` (all checks) -- the
+    #       fallback when lens 1 yields no signal.
+    #
+    # Lens 1 yields no signal in two shapes that are indistinguishable at
+    # the call site -- both exit 1 with empty stdout, diagnostic on
+    # stderr: "no required checks reported on the ... branch" (no branch
+    # protection, the issue #51 case) and any other fetch failure (network,
+    # auth, API). Neither may print "passing": treating exit-1-empty as
+    # "no required checks -> passing" would green-light a PR on a genuine
+    # API failure, the misleading-green regression issue #21 fixed. The
+    # rollup fallback dissolves the ambiguity instead: an UNSTABLE from a
+    # failing non-required check -- invisible to the required-only lens,
+    # and the reason the old code could report "pending" forever on a PR
+    # whose checks had all finished -- classifies as failing. Only when
+    # BOTH lenses degrade is "pending" printed.
+    # Note: `gh pr checks --json` exits 0 even when checks fail (gh
+    # returns from its exporter path before the exit-code logic), so a
+    # nonzero exit here always means "could not fetch", never "checks
+    # failing". An older gh CLI without the `--required --json`
+    # combination also lands on the rollup lens and keeps working.
     #
     # Trade-off (N+1 calls): BLOCKED is the common state for PRs awaiting
-    # review, so `gh amp list` (default --limit 30) with many such PRs will
-    # fire up to ~30 sequential `gh pr checks --required` subprocess + API
-    # round trips on top of the single batched GraphQL query. This is the
-    # accepted cost of surfacing required-check signal next to mergeable; if
-    # list latency bites in practice, cap the count or parallelize the calls
-    # here (e.g. via background jobs / xargs -P).
+    # review, so `gh amp list` (default --limit 30) with many such PRs
+    # fires sequential `gh pr checks` subprocess + API round trips on top
+    # of the single batched GraphQL query -- up to two per PR now (the
+    # second only when the required lens yields nothing, e.g. on
+    # unprotected repos). This is the accepted cost of surfacing check
+    # signal next to mergeable; if list latency bites in practice, cap
+    # the count or parallelize the calls here (e.g. via background jobs /
+    # xargs -P).
     local pr_number="$1"
 
     local repo_args=()
@@ -239,33 +287,33 @@ refine_checks_status() {
         repo_args+=(--repo "$REPO")
     fi
 
-    local buckets
-    buckets="$(gh pr checks "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --required --json bucket 2>/dev/null)" || {
-        printf 'pending'
-        return 0
-    }
+    local buckets status
 
-    if [[ -z "$buckets" || "$buckets" == "[]" ]]; then
-        # No required checks configured -> nothing required, treat as passing.
-        printf 'passing'
-        return 0
+    # Lens 1: required checks. A fetch failure is an empty signal, not an
+    # answer -- see the indistinguishability note above.
+    buckets="$(gh pr checks "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --required --json bucket 2>/dev/null)" || buckets=""
+    status="$(printf '%s' "$buckets" | classify_check_buckets)"
+
+    # Lens 2: full rollup fallback (issue #51).
+    if [[ -z "$status" ]]; then
+        buckets="$(gh pr checks "$pr_number" ${repo_args[@]+"${repo_args[@]}"} --json bucket 2>/dev/null)" || buckets=""
+        status="$(printf '%s' "$buckets" | classify_check_buckets)"
     fi
 
-    if printf '%s' "$buckets" | jq -e 'any(.[]; .bucket == "fail" or .bucket == "cancel")' >/dev/null 2>&1; then
-        printf 'failing'
-        return 0
+    # Both lenses degraded -> "pending": this path only runs when GitHub
+    # already signaled something blocks merge, so "passing" is never the
+    # degradation answer (issue #21).
+    if [[ -z "$status" ]]; then
+        status="pending"
     fi
-    if printf '%s' "$buckets" | jq -e 'any(.[]; .bucket == "pending")' >/dev/null 2>&1; then
-        printf 'pending'
-        return 0
-    fi
-    printf 'passing'
+    printf '%s' "$status"
 }
 
 checks_status() {
-    # Print the required-check status for a single PR: passing|pending|failing|<empty>
+    # Print the checks status for a single PR: passing|pending|failing|<empty>
     # Uses GraphQL mergeStateStatus as the primary signal and refines
-    # BLOCKED/UNSTABLE/DIRTY with `gh pr checks --required`.
+    # BLOCKED/UNSTABLE/DIRTY through refine_checks_status (required checks
+    # first, full-rollup fallback -- issue #51).
     # Empty output means the status could not be determined (graceful degradation).
     local pr_number="$1"
 
@@ -298,7 +346,9 @@ checks_status() {
 }
 
 batch_checks_status() {
-    # Print required-check status for multiple PRs in one GraphQL query.
+    # Print checks status for multiple PRs in one GraphQL query.
+    # BLOCKED/UNSTABLE/DIRTY entries are refined per-PR through
+    # refine_checks_status after the batched mergeStateStatus fetch.
     # Input: newline-delimited PR numbers on stdin.
     # Output: "<num> <status>" lines, one per input number.
     # Status is one of passing|pending|failing|<empty on error/degradation>.
@@ -472,7 +522,7 @@ cmd_list() {
         return 0
     fi
 
-    # Batch-fetch required-check status for all listed PRs.
+    # Batch-fetch checks status for all listed PRs.
     local checks_map
     checks_map="$(printf '%s\n' "$prs" | jq -r '.[].number' | batch_checks_status)" || checks_map=""
 
@@ -548,7 +598,7 @@ select_pr() {
         return 1
     fi
 
-    # Batch-fetch required-check status for all listed PRs.
+    # Batch-fetch checks status for all listed PRs.
     local checks_map
     checks_map="$(printf '%s\n' "$prs" | jq -r '.[].number' | batch_checks_status)" || checks_map=""
 

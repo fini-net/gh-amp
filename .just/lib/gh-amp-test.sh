@@ -13,6 +13,8 @@
 #   - color_for_status()       -- status -> color mapping
 #   - draft_marker()           -- isDraft -> "(draft)" title suffix
 #   - number_color()           -- isDraft -> grey/green number color
+#   - classify_check_buckets() -- checks bucket JSON -> failing|pending|passing
+#   - refine_checks_status()   -- two-lens checks refinement, gh stubbed (issue #51)
 #   - the batch PR-number filter (via the regexp it uses)
 #
 # Each section runs a seed corpus of known-good, known-bad, and adversarial
@@ -230,6 +232,150 @@ test_lookup_check_status() {
     record "lookup_check_status()" "$ok"
 }
 
+test_classify_check_buckets() {
+    # The bucket classifier drives the checks: refinement (issue #51), so
+    # its output must be exact: fail/cancel -> failing, pending -> pending,
+    # pass/skipping -> passing. No-signal shapes (empty input, empty array,
+    # non-array JSON, malformed JSON, garbage elements) must print NOTHING:
+    # an empty result is the caller's cue to degrade, so a stray "passing"
+    # here would be exactly the misleading green light issue #21 guards
+    # against. Mixed valid+garbage shapes (e.g. a fail bucket followed by
+    # a number) are deliberately excluded: jq's any/2 short-circuits on
+    # modern jq but errors on jq 1.6-era builds, so their output is
+    # jq-version-dependent rather than a stable classifier contract.
+    local ok=true
+    local out
+
+    out="$(printf '%s' '[{"bucket":"fail"}]' | classify_check_buckets)"
+    assert_eq "fail -> failing" "failing" "$out" || ok=false
+    out="$(printf '%s' '[{"bucket":"cancel"}]' | classify_check_buckets)"
+    assert_eq "cancel -> failing" "failing" "$out" || ok=false
+    out="$(printf '%s' '[{"bucket":"pending"}]' | classify_check_buckets)"
+    assert_eq "pending -> pending" "pending" "$out" || ok=false
+    out="$(printf '%s' '[{"bucket":"pass"}]' | classify_check_buckets)"
+    assert_eq "pass -> passing" "passing" "$out" || ok=false
+    out="$(printf '%s' '[{"bucket":"skipping"},{"bucket":"skipping"}]' | classify_check_buckets)"
+    assert_eq "skipping-only -> passing" "passing" "$out" || ok=false
+
+    # Precedence: a red X outranks yellow, yellow outranks green.
+    out="$(printf '%s' '[{"bucket":"pass"},{"bucket":"fail"},{"bucket":"pending"}]' | classify_check_buckets)"
+    assert_eq "fail beats pending" "failing" "$out" || ok=false
+    out="$(printf '%s' '[{"bucket":"pass"},{"bucket":"pending"}]' | classify_check_buckets)"
+    assert_eq "pending beats pass" "pending" "$out" || ok=false
+
+    # The issue #51 seed: the full rollup of www-chicks-net PR #409 (a
+    # failing actionlint among passing/skipping checks) must surface the
+    # failure, not hide it behind "pending".
+    out="$(printf '%s' '[{"bucket":"skipping"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"fail"},{"bucket":"skipping"}]' | classify_check_buckets)"
+    assert_eq "PR #409 rollup -> failing" "failing" "$out" || ok=false
+
+    # No-signal shapes print nothing (degradation cue, never "passing").
+    local shape
+    for shape in '[]' '' 'not json' 'null' '{"bucket":"fail"}' '[1,2]'; do
+        out="$(printf '%s' "$shape" | classify_check_buckets)"
+        if [[ -n "$out" ]]; then
+            echo "    [$shape] produced: $(printf '%q' "$out")"
+            ok=false
+        fi
+    done
+
+    record "classify_check_buckets()" "$ok"
+}
+
+test_refine_checks_status_fallback() {
+    # End-to-end regression for issue #51 with gh stubbed on PATH: when the
+    # required-check lens exits 1 with empty stdout -- the real behavior
+    # for "no required checks reported on the ... branch" on unprotected
+    # repos, and indistinguishable there from a genuine fetch failure --
+    # refine_checks_status must fall back to the full-rollup lens instead
+    # of printing a "pending" that can never resolve. Also pins the issue
+    # #21 guard: when BOTH lenses degrade, the answer is "pending", never
+    # "passing". The stub mirrors verified gh behavior: `--json` mode exits
+    # 0 with data even when checks fail, while "no required checks" and
+    # fetch failures exit 1 with empty stdout (message on stderr).
+    local ok=true
+
+    local stub_dir
+    stub_dir="$(mktemp -d)"
+
+    # The stub answers the two `gh pr checks` shapes refine_checks_status
+    # issues: --required invocations serve $REQUIRED_FILE (exit 1 with
+    # empty stdout when unset, the no-required-checks behavior), rollup
+    # invocations serve $ROLLUP_FILE (exit 1 when unset).
+    cat >"$stub_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *--required* ]]; then
+    if [[ -n "${REQUIRED_FILE:-}" ]]; then
+        cat "${REQUIRED_FILE}"
+        exit 0
+    fi
+    exit 1
+fi
+if [[ -n "${ROLLUP_FILE:-}" ]]; then
+    cat "${ROLLUP_FILE}"
+    exit 0
+fi
+exit 1
+STUB
+    chmod +x "$stub_dir/gh"
+
+    # Fixtures: the required lens failing / empty, and rollups matching
+    # the live PR #409 data (one failing check), all-pass, and pending.
+    local req_fail="$stub_dir/required-fail.json"
+    printf '%s' '[{"bucket":"fail"}]' >"$req_fail"
+    local req_empty="$stub_dir/required-empty.json"
+    printf '%s' '[]' >"$req_empty"
+    local rollup_409="$stub_dir/rollup-409.json"
+    printf '%s' '[{"bucket":"skipping"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"pass"},{"bucket":"fail"},{"bucket":"skipping"}]' >"$rollup_409"
+    local rollup_pass="$stub_dir/rollup-pass.json"
+    printf '%s' '[{"bucket":"pass"},{"bucket":"skipping"}]' >"$rollup_pass"
+    local rollup_pending="$stub_dir/rollup-pending.json"
+    printf '%s' '[{"bucket":"pass"},{"bucket":"pending"}]' >"$rollup_pending"
+
+    # Every scenario calls refine_checks_status with the stub first on PATH
+    # using command-scoped env prefixes (verified: bash exports prefix
+    # assignments to a function's child processes and restores them after
+    # the call), so neither the PATH override nor the stub's fixture files
+    # leak into the rest of the suite.
+    local out
+
+    # Issue #51: required lens degrades (no branch protection), rollup
+    # shows PR #409's failing actionlint -> failing, not a "pending" that
+    # can never resolve.
+    out="$(PATH="$stub_dir:$PATH" ROLLUP_FILE="$rollup_409" refine_checks_status 409)"
+    assert_eq "no required checks + failing rollup -> failing" "failing" "$out" || ok=false
+
+    # Issue #21 guard: both lenses degrade -> pending, never passing.
+    out="$(PATH="$stub_dir:$PATH" refine_checks_status 409)"
+    assert_eq "both lenses degrade -> pending" "pending" "$out" || ok=false
+
+    # Required lens degrades, rollup all green -> passing (the checks
+    # genuinely pass; the merge blocker shows in other columns).
+    out="$(PATH="$stub_dir:$PATH" ROLLUP_FILE="$rollup_pass" refine_checks_status 409)"
+    assert_eq "no required checks + passing rollup -> passing" "passing" "$out" || ok=false
+
+    # Required lens degrades, rollup has a pending bucket -> pending
+    # (truthful this time: something is actually still running).
+    out="$(PATH="$stub_dir:$PATH" ROLLUP_FILE="$rollup_pending" refine_checks_status 409)"
+    assert_eq "no required checks + pending rollup -> pending" "pending" "$out" || ok=false
+
+    # The required lens still wins when it has data: no fallback to the
+    # (greener) rollup lens.
+    out="$(PATH="$stub_dir:$PATH" REQUIRED_FILE="$req_fail" ROLLUP_FILE="$rollup_pass" refine_checks_status 409)"
+    assert_eq "required lens data wins over rollup" "failing" "$out" || ok=false
+
+    # A required lens that fetches an empty array falls through to the
+    # rollup too -- the old empty->passing branch was dead code and is
+    # gone (issue #51); "passing" here would be a green light with no
+    # data behind it.
+    out="$(PATH="$stub_dir:$PATH" REQUIRED_FILE="$req_empty" ROLLUP_FILE="$rollup_409" refine_checks_status 409)"
+    assert_eq "empty required array + failing rollup -> failing" "failing" "$out" || ok=false
+
+    rm -rf "$stub_dir"
+
+    record "refine_checks_status() two-lens fallback" "$ok"
+}
+
 test_batch_pr_number_filter() {
     # The filter regex used by batch_checks_status before splicing numbers
     # into a GraphQL query string. Kept in sync with the script; the fuzz
@@ -403,6 +549,8 @@ run_suite() {
     test_valid_menu_choice
     test_resolve_owner_repo
     test_lookup_check_status
+    test_classify_check_buckets
+    test_refine_checks_status_fallback
     test_batch_pr_number_filter
     test_color_for_status
     test_draft_marker
