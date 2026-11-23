@@ -2,6 +2,53 @@
 
 This file tracks the evolution of the Git/GitHub workflow automation module.
 
+## November 2026 - Trust, but verify
+
+### Signed release workflow with dual provenance (2026-11-23)
+
+Releases now ship signed assets with verifiable provenance, following the
+family pattern rolled out across
+[chicks-projects#156](https://github.com/chicks-net/chicks-projects/issues/156).
+Previously `just release` created bare releases with auto-generated notes and
+nothing else - no assets, no signatures, nothing for `gh attestation verify`
+to even chew on.
+
+**New `.github/workflows/release.yml`** (adopted verbatim from
+[template-repo](https://github.com/fini-net/template-repo), zero per-repo
+edits - the bundle name derives from `GITHUB_REPOSITORY`):
+
+- **Triggered by `just release`** - the tag push that `gh release create`
+  already makes fires the workflow; the release recipe itself is unchanged
+- **Assets** - the full tagged tree via `git archive` (`gh-amp-<tag>.tar.gz`,
+  byte-identical to the tag), `checksums.txt`, a cosign keyless signature
+  (`.sigstore.json`), and a CycloneDX SBOM (`.cdx.json`)
+- **Dual provenance is intentional** - `actions/attest-build-provenance`
+  registers GitHub-native attestations (what `gh attestation verify` talks
+  to) while the `slsa-github-generator` job uploads the
+  `multiple.intoto.jsonl` SLSA provenance asset (what OpenSSF Scorecard and
+  `just compliance_check` look for). Don't "unify" them.
+- **Hardening** - `permissions: {}` globally with per-job grants, SHA-pinned
+  actions, hardened runner, `persist-credentials: false`, a
+  tag-reachable-from-main guard, and per-ref concurrency cancellation
+
+**New `just verify-release [TAG]` recipe** (root justfile, modeled on the
+fleet's most evolved version in www-chicks-net): walks all six layers -
+cosign keyless signature, SLSA provenance (bundle), GitHub-native
+attestation (bundle), GitHub-native attestation (`checksums.txt`), SLSA
+provenance (`checksums.txt`), and the bundle hash against the attested
+`checksums.txt`. The attestation checks pin
+`--signer-workflow`/`--source-ref`/`--deny-self-hosted-runners` and the
+recipe gates on gh version (hard fail below 2.68.0, warn below 2.102.0 -
+older ghs compare those flags loosely, see the advisories in SECURITY.md).
+
+**New `.github/SECURITY.md`** documents the asset layers, manual
+verification commands, and the gh version floors - and fills in the link
+that README has been pointing at all along, plus the compliance check that
+wanted the file.
+
+Releases before `v0.6` have no signed assets; `just verify-release` against
+them fails with a download error, which is expected.
+
 ## March 2026 - More resilience
 
 ### v5.8.1 - Executable permissions for template updates (2026-03-22)
