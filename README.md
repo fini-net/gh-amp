@@ -150,6 +150,20 @@ gh amp status 42 -R fini-net/gh-amp
 - **`--version`** -- Show version
 - **`-h, --help`** -- Show help
 
+## Verifying Releases
+
+Each tagged release ships a signed asset bundle: the tagged tree as a tarball,
+a cosign keyless signature, a CycloneDX SBOM, `checksums.txt`, SLSA build
+provenance, and GitHub-native artifact attestations. To verify all the
+signature and provenance layers in one pass:
+
+```bash
+just verify-release vX.Y.Z   # or no argument for the latest release
+```
+
+Manual verification commands and what covers what are documented in the
+[Security Policy](.github/SECURITY.md).
+
 ## Contributing
 
 - [Code of Conduct](.github/CODE_OF_CONDUCT.md)
