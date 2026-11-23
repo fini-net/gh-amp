@@ -54,10 +54,12 @@ Key functions and their roles:
 The test suite sources the `gh-amp` script (its `main()` is guarded to run
 only when executed, not sourced) and asserts invariants on the functions
 that parse or render untrusted input: `sanitize()`, `valid_menu_choice()`,
-`resolve_owner_repo()`, `lookup_check_status()`, and the batch PR-number
-filter. The fuzz driver (`.just/lib/gh-amp-fuzz.sh`) generates adversarial
-input (escape soup, oversized numerics, malformed repo targets) against the
-same invariants. This is the bash analogue of gh-observer's Go fuzz targets.
+`resolve_owner_repo()`, `lookup_check_status()`, `classify_check_buckets()`,
+`refine_checks_status()`, `draft_marker()`, `number_color()`, and the batch
+PR-number filter. The fuzz driver (`.just/lib/gh-amp-fuzz.sh`) generates
+adversarial input (escape soup, oversized numerics, malformed repo targets,
+hostile bucket JSON) against the same invariants. This is the bash analogue
+of gh-observer's Go fuzz targets.
 
 The live test recipes run from `../gh-observer/` (requires that repo checked
 out as a sibling):

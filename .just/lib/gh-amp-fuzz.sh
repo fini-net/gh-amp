@@ -10,6 +10,10 @@
 #     menu item (guards the int64-overflow and octal bugs)
 #   - resolve_owner_repo(): a successful parse yields GitHub slugs
 #   - the batch PR-number filter regexp used in the GraphQL splice
+#   - classify_check_buckets(): bucket JSON on stdin prints exactly one
+#     of failing|pending|passing, or nothing at all for no-signal shapes
+#     (empty input, empty array, non-array or malformed JSON); fail/cancel
+#     beats pending beats pass regardless of element order or repetition
 #
 # Usage: gh-amp-fuzz.sh [duration] (default 30s; suffixes like 10m work)
 set -euo pipefail
@@ -117,6 +121,105 @@ rand_repo_target() {
     printf '%s' "$out"
 }
 
+rand_bucket_json() {
+    # Emit "<expected> <json>" for classify_check_buckets, where expected
+    # is failing|pending|passing|none ("none" = expect empty output, the
+    # caller's degradation cue). Two shape classes:
+    #
+    #   well-formed: an array of 0..8 elements, every element an OBJECT.
+    #     Each element draws a semantic first (fail/pending/pass/neutral),
+    #     then a concrete spelling: real buckets, JSON-escaped spellings,
+    #     case-mangled and padded lookalikes, output words as input,
+    #     non-string values, missing keys. Order and repetition are free,
+    #     so mixed draws exercise precedence every time.
+    #   no-signal: empty input, [], non-array JSON, malformed JSON, and
+    #     all-non-object arrays -- expected "none". A stray "passing" for
+    #     any of these would be the misleading green light issue #21
+    #     guards against.
+    #
+    # jq-version determinism (the issue #55 caveat): generated arrays NEVER
+    # mix object elements with non-object elements. Shapes like
+    # [{"bucket":"fail"},1] are jq-version-dependent -- modern jq
+    # short-circuits any/2 to "failing" while jq 1.6-era builds error and
+    # print nothing -- so they are excluded here exactly as
+    # test_classify_check_buckets excludes them. [1,2] is safe (its
+    # non-object element errors on every jq before any short-circuit
+    # question can matter) and stays.
+    local shape=$(( RANDOM % 5 ))
+    if (( shape == 0 )); then
+        local junk
+        case $(( RANDOM % 9 )) in
+            0) junk='' ;;
+            1) junk='[]' ;;
+            2) junk='null' ;;
+            3) junk='not json' ;;
+            4) junk='{}' ;;
+            5) junk='42' ;;
+            6) junk='[1,2]' ;;
+            7) junk='[{"bucket":"fail"' ;;                # truncated
+            8) junk='"[{\"bucket\":\"fail\"}]"' ;;        # double-encoded
+        esac
+        printf 'none %s' "$junk"
+        return
+    fi
+
+    local n=$(( RANDOM % 9 ))
+    local json='['
+    local has_fail=0 has_pending=0
+    local i spelling
+    for (( i = 0; i < n; i++ )); do
+        (( i > 0 )) && json+=','
+        case $(( RANDOM % 4 )) in
+            0)  # fail semantic: must classify failing wherever it appears
+                has_fail=1
+                case $(( RANDOM % 3 )) in
+                    0) spelling='{"bucket":"fail"}' ;;
+                    1) spelling='{"bucket":"cancel"}' ;;
+                    2) spelling='{"bucket":"\u0066ail"}' ;;  # escaped "fail"
+                esac
+                ;;
+            1)  # pending semantic: outranks pass, loses to fail
+                has_pending=1
+                spelling='{"bucket":"pending"}'
+                ;;
+            2)  # pass semantic
+                case $(( RANDOM % 2 )) in
+                    0) spelling='{"bucket":"pass"}' ;;
+                    1) spelling='{"bucket":"skipping"}' ;;
+                esac
+                ;;
+            3)  # neutral: must never match any bucket test
+                case $(( RANDOM % 10 )) in
+                    0) spelling='{}' ;;                         # missing key
+                    1) spelling='{"bucket":null}' ;;
+                    2) spelling='{"bucket":1}' ;;
+                    3) spelling='{"bucket":["fail"]}' ;;        # array value
+                    4) spelling='{"bucket":"FAIL"}' ;;          # wrong case
+                    5) spelling='{"bucket":"fail "}' ;;         # padded
+                    6) spelling='{"bucket":"passing"}' ;;       # output word as input
+                    7) spelling='{"bucket":"failing"}' ;;
+                    8) spelling='{"bucket":"\\033[31mfail"}' ;; # literal escape text
+                    9) spelling='{"bucket":"PENDING"}' ;;        # wrong case, pending clause
+                esac
+                ;;
+        esac
+        json+="$spelling"
+    done
+    json+=']'
+
+    local expected
+    if (( has_fail )); then
+        expected=failing
+    elif (( has_pending )); then
+        expected=pending
+    elif (( n > 0 )); then
+        expected=passing
+    else
+        expected=none   # the "[]" draw
+    fi
+    printf '%s %s' "$expected" "$json"
+}
+
 # --- oracles ---------------------------------------------------------------
 
 check_sanitize() {
@@ -205,6 +308,50 @@ check_pr_number_filter() {
     return 0
 }
 
+check_classify_buckets() {
+    # Exact-match oracle for classify_check_buckets. $1 is the expected
+    # token from rand_bucket_json (failing|pending|passing|none), $2 the
+    # JSON to classify. "none" means no-signal: the function must print
+    # NOTHING -- empty output is the caller's degradation cue, and a stray
+    # "passing" would be the misleading green light issue #21 guards
+    # against. Exact match also enforces the never-partial invariant:
+    # "fail" or "failing\njunk" both miss.
+    local expected="$1" input="$2"
+    local want=""
+    [[ "$expected" != none ]] && want="$expected"
+    local out
+    out="$(printf '%s' "$input" | classify_check_buckets)"
+    if [[ "$out" != "$want" ]]; then
+        echo "FAIL iter=$iter: classify_check_buckets: expected $(printf '%q' "$want") but got $(printf '%q' "$out") for input:"
+        printf '%s\n' "$input" | od -An -c | sed 's/^/    /'
+        fail=1
+        return 1
+    fi
+    return 0
+}
+
+check_classify_soup() {
+    # Universal invariant for arbitrary garbage: whatever bytes go in, the
+    # output is exactly one of failing|pending|passing or empty -- never a
+    # partial word, never extra text. Demanding empty here is not sound:
+    # the soup generators can legitimately assemble `[{}]` (legal JSON,
+    # non-empty object array, no bucket keys), which correctly classifies
+    # as "passing" -- the else branch treats unknown or missing buckets
+    # as green unless fail/cancel/pending appears. The bucket-aware
+    # generator pins exact outputs; this pins the output vocabulary for
+    # shapes nobody predicted.
+    local input="$1"
+    local out
+    out="$(printf '%s' "$input" | classify_check_buckets)"
+    if [[ ! "$out" =~ ^(failing|pending|passing)?$ ]]; then
+        echo "FAIL iter=$iter: classify_check_buckets emitted $(printf '%q' "$out") for garbage input:"
+        printf '%s\n' "$input" | od -An -c | sed 's/^/    /'
+        fail=1
+        return 1
+    fi
+    return 0
+}
+
 # --- loop ------------------------------------------------------------------
 
 echo "Fuzzing gh-amp helpers for $DURATION (seed 42)..."
@@ -216,6 +363,10 @@ while (( $(date +%s) < deadline )); do
     check_menu_choice "$(rand_number)" || break
     check_repo_target "$(rand_repo_target)" || break
     check_pr_number_filter "$(rand_number)" || break
+    gen="$(rand_bucket_json)"
+    check_classify_buckets "${gen%% *}" "${gen#* }" || break
+    check_classify_soup "$(rand_printable)" || break
+    check_classify_soup "$(rand_number)" || break
 done
 
 if (( fail )); then
