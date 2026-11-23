@@ -189,7 +189,7 @@ rand_bucket_json() {
                 esac
                 ;;
             3)  # neutral: must never match any bucket test
-                case $(( RANDOM % 9 )) in
+                case $(( RANDOM % 10 )) in
                     0) spelling='{}' ;;                         # missing key
                     1) spelling='{"bucket":null}' ;;
                     2) spelling='{"bucket":1}' ;;
@@ -199,6 +199,7 @@ rand_bucket_json() {
                     6) spelling='{"bucket":"passing"}' ;;       # output word as input
                     7) spelling='{"bucket":"failing"}' ;;
                     8) spelling='{"bucket":"\\033[31mfail"}' ;; # literal escape text
+                    9) spelling='{"bucket":"PENDING"}' ;;        # wrong case, pending clause
                 esac
                 ;;
         esac
